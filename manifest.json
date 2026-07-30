@@ -1,0 +1,11 @@
+{
+  "id": "topic-collab",
+  "name": "课题协作",
+  "version": "0.6.0",
+  "minAppVersion": "1.5.0",
+  "description": "AI 驱动的课题写作助手：检错/讨论/续写/LaTeX/修改笔记，支持 DeepSeek & Anthropic API。",
+  "author": "longee",
+  "authorUrl": "https://github.com/longee142857",
+  "isDesktopOnly": false,
+  "fundingUrl": ""
+}
