@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes("--watch");
+const isWin = process.platform === "win32";
 const vaultPluginDir = "D:/数学笔记/.obsidian/plugins/topic-collab";
 
 const context = await esbuild.context({
@@ -19,6 +20,7 @@ const context = await esbuild.context({
 });
 
 async function deploy() {
+  if (!isWin) return;
   mkdirSync(vaultPluginDir, { recursive: true });
   for (const file of ["manifest.json", "styles.css", "main.js"]) {
     const src = join(__dirname, file);

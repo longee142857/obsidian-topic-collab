@@ -28,4 +28,3 @@ jobs:
             styles.css
             versions.json
           draft: false
-          generate_release_notes: true
