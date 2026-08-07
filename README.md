@@ -16,11 +16,11 @@
 | LaTeX | `latex` | 将数学表述转为 LaTeX，或检查已有公式语法 |
 | 修改笔记 | `edit` | AI 生成修改建议 → 用户预览确认 → 写入笔记（仅限 @ 文件） |
 
-### Ghost Tab（v0.7）
+### 本地补全 + Ghost（v0.8）
 
-- 停笔后规则门控（数学环境 / `latexBias`）→ FIM 请求 → 灰字建议
+- **热路径（默认开）**：数学区内灰字补全 — LaTeX 命令字典 / 本页符号 / 笔记词库；纯本地、零 LLM
+- **冷路径（默认关）**：`ghostMode=manual|idle` 时可选 FIM；中文别名生成走独立命令
 - **Tab** 接受，**Esc** 取消；与侧栏讨论分离，不写 `collab-memory`
-- 设置：启用幽灵补全、debounce、LaTeX 侧重 0–1
 
 ### Key Features / 核心能力
 
