@@ -41,13 +41,21 @@ var DEFAULT_SETTINGS = {
   defaultIntent: "",
   contextMaxChars: 0,
   historyTurns: 3,
-  memoryMode: "single"
+  memoryMode: "single",
+  ghostMode: "off",
+  ghostDebounceMs: 2e3,
+  ghostCooldownMs: 12e3,
+  latexBias: 0.85,
+  localCompletion: true,
+  autoLexicon: true,
+  lexiconDebounceMs: 5e3,
+  ghostModel: "deepseek-v4-flash"
 };
 var ALL_INTENTS = ["check", "discuss", "continue", "latex", "edit"];
 var INTENT_LABELS = {
   check: "\u68C0\u9519",
   discuss: "\u8BA8\u8BBA",
-  continue: "\u7EED\u5199\u601D\u8DEF",
+  continue: "\u63D0\u7EB2",
   latex: "LaTeX",
   edit: "\u4FEE\u6539\u7B14\u8BB0"
 };
@@ -61,10 +69,15 @@ function migrateIntent(value) {
 }
 
 // src/prompts.ts
-var BASE_RULES = `\u4F60\u662F\u6570\u5B66\u7B14\u8BB0\u5199\u4F5C\u52A9\u624B\u3002\u7528\u6237\u5728\u81EA\u5DF1\u7684 Obsidian vault \u91CC\u5199\u8BFE\u9898\u7B14\u8BB0\u3002
-\u56DE\u590D\u4E00\u5F8B\u4F7F\u7528\u7B80\u4F53\u4E2D\u6587\u3002\u5C0A\u91CD\u7528\u6237\u7684\u884C\u6587\u98CE\u683C\uFF0C\u4E0D\u8981\u6574\u7BC7\u91CD\u5199\u3002
+var BASE_RULES = `\u4F60\u662F\u6570\u5B66\u8BFE\u9898\u7B14\u8BB0\u52A9\u624B\u3002\u7528\u6237\u5728 Obsidian \u91CC\u5199\u300C\u5355\u95EE\u9898\u7814\u7A76\u300D\u7B14\u8BB0\uFF08\u4E0D\u662F\u8003\u70B9\u5361\u3001\u4E0D\u662F\u6559\u6750\u590D\u8FF0\uFF09\u3002
+\u56DE\u590D\u4E00\u5F8B\u4F7F\u7528\u7B80\u4F53\u4E2D\u6587\u3002\u5C0A\u91CD\u7528\u6237\u7684\u884C\u6587\u98CE\u683C\uFF0C\u4E0D\u8981\u6574\u7BC7\u91CD\u5199\u3001\u4E0D\u8981\u4EE3\u5199\u7406\u89E3\u6B63\u6587\u3002
 \u53EA\u9488\u5BF9\u7528\u6237\u63D0\u4EA4\u7684\u5185\u5BB9\u7ED9\u53CD\u9988\uFF0C\u4E0D\u8981\u7F16\u9020 vault \u91CC\u4E0D\u5B58\u5728\u7684\u6587\u4EF6\u6216\u7AE0\u8282\u3002
 LaTeX \u4E00\u5F8B\u7528 $...$\uFF08\u884C\u5185\uFF09\u6216 $$...$$\uFF08\u72EC\u7ACB\u516C\u5F0F\uFF09\uFF0C\u7981\u6B62\u4F7F\u7528 (...) \u6216 [...]\u3002`;
+var GENERIC_PROMPT = `${BASE_RULES}
+
+\u4EFB\u52A1\uFF1A\u81EA\u7531\u56DE\u7B54
+- \u76F4\u63A5\u56DE\u5E94\u7528\u6237\u63D0\u4EA4\u7684\u5185\u5BB9\uFF08\u7B54\u7591\u3001\u89E3\u91CA\u3001\u68C0\u67E5\u3001\u8BA8\u8BBA\u7686\u53EF\uFF09\uFF0C\u4E0D\u5957\u7528\u9884\u8BBE\u6A21\u5F0F
+- \u56DE\u590D\u7B80\u6D01\u3001\u8D34\u5408\u7528\u6237\u95EE\u9898\uFF1BLaTeX \u4E00\u5F8B\u7528 $...$ / $$...$$`;
 var SYSTEM_PROMPTS = {
   check: `${BASE_RULES}
 
@@ -75,17 +88,17 @@ var SYSTEM_PROMPTS = {
 - \u5982\u679C\u6CA1\u6709\u660E\u663E\u9519\u8BEF\uFF0C\u7B80\u8981\u80AF\u5B9A\u5E76\u6307\u51FA 1\u20132 \u4E2A\u53EF\u52A0\u5F3A\u7684\u70B9`,
   discuss: `${BASE_RULES}
 
-\u4EFB\u52A1\uFF1A\u8BA8\u8BBA\u4E0E\u8BB2\u89E3
-- \u9488\u5BF9\u7528\u6237\u7B14\u8BB0\u6216\u9009\u4E2D\u7684\u5185\u5BB9\uFF0C\u7EE7\u7EED\u8BA8\u8BBA\u3001\u8BB2\u89E3\u6216\u7B54\u7591
-- \u53EF\u4EE5\u8865\u5145\u80CC\u666F\u3001\u76F4\u89C9\u3001\u4E0E\u5176\u4ED6\u6982\u5FF5\u7684\u8054\u7CFB\uFF0C\u5E2E\u52A9\u7528\u6237\u7406\u89E3
-- \u8BED\u6C14\u50CF\u4E00\u4F4D\u8010\u5FC3\u7684\u52A9\u6559\uFF0C\u4E0D\u8981\u66FF\u7528\u6237\u6574\u7BC7\u91CD\u5199
-- \u82E5\u7528\u6237\u6709\u5177\u4F53\u95EE\u9898\uFF0C\u4F18\u5148\u76F4\u63A5\u56DE\u7B54\uFF1B\u82E5\u65E0\u5177\u4F53\u95EE\u9898\uFF0C\u5C31\u5F53\u524D\u5185\u5BB9\u505A\u9002\u5EA6\u5C55\u5F00`,
+\u4EFB\u52A1\uFF1A\u5355\u95EE\u9898\u82CF\u683C\u62C9\u5E95\u8BA8\u8BBA
+- \u951A\u5B9A\u7528\u6237\u5F53\u524D\u8FD9\u4E00\u9898/\u8FD9\u4E00\u6BB5\uFF0C\u7528\u8FFD\u95EE\u5E2E\u52A9\u60F3\u6E05\u695A
+- \u4F18\u5148\u63D0\u51FA 2\u20134 \u4E2A\u5C16\u9510\u95EE\u9898\uFF1B\u9700\u8981\u65F6\u518D\u7ED9\u7B80\u77ED\u63D0\u793A\uFF0C\u4E0D\u8981\u5199\u6210\u65B0\u7AE0\u8282
+- \u53EF\u4EE5\u6307\u51FA\u4E0E\u5176\u4ED6\u6982\u5FF5\u7684\u8054\u7CFB\uFF0C\u4F46\u7559\u7ED9\u7528\u6237\u81EA\u5DF1\u5199\u8FDB\u7B14\u8BB0
+- \u8BED\u6C14\u50CF\u8010\u5FC3\u52A9\u6559\uFF0C\u7981\u6B62\u6574\u6BB5\u4EE3\u5199\u7406\u89E3\u6B63\u6587`,
   continue: `${BASE_RULES}
 
-\u4EFB\u52A1\uFF1A\u7EED\u5199\u601D\u8DEF
-- \u57FA\u4E8E\u7528\u6237\u521A\u5199\u7684\u5185\u5BB9\u548C\u7B14\u8BB0\u4E0A\u4E0B\u6587\uFF0C\u7ED9\u51FA 2\u20133 \u6761\u53EF\u7EE7\u7EED\u5199\u4E0B\u53BB\u7684\u65B9\u5411
-- \u6BCF\u6761\u65B9\u5411\u7528\u6807\u9898 + \u7EA6 2 \u53E5\u5C55\u5F00\uFF08\u8BF4\u660E\u53EF\u4EE5\u5199\u4EC0\u4E48\u3001\u4E3A\u4EC0\u4E48\u503C\u5F97\u5199\uFF09
-- \u4E0D\u8981\u76F4\u63A5\u66FF\u7528\u6237\u5199\u5927\u6BB5\u6B63\u6587\uFF0C\u53EA\u7ED9\u601D\u8DEF`,
+\u4EFB\u52A1\uFF1A\u53EA\u7ED9\u63D0\u7EB2\uFF0C\u4E0D\u5199\u6B63\u6587
+- \u57FA\u4E8E\u7528\u6237\u521A\u5199\u7684\u5185\u5BB9\u548C\u7B14\u8BB0\u4E0A\u4E0B\u6587\uFF0C\u7ED9\u51FA 2\u20133 \u6761\u53EF\u7EE7\u7EED\u63A8\u8FDB\u7684\u65B9\u5411
+- \u6BCF\u6761\u53EA\u7528\uFF1A\u77ED\u6807\u9898 + \u4E00\u884C\u8BF4\u660E\uFF08\u5199\u4EC0\u4E48\u3001\u4E3A\u4F55\u503C\u5F97\uFF09
+- \u7981\u6B62\u8F93\u51FA\u53EF\u76F4\u63A5\u7C98\u8D34\u7684\u5927\u6BB5\u6B63\u6587\u6216\u5B8C\u6574\u63A8\u5BFC`,
   latex: `${BASE_RULES}
 
 \u4EFB\u52A1\uFF1ALaTeX \u516C\u5F0F
@@ -98,11 +111,12 @@ var SYSTEM_PROMPTS = {
 - \u5148\u89E3\u91CA\u4F60\u8981\u505A\u4EC0\u4E48\u4FEE\u6539\u4EE5\u53CA\u4E3A\u4EC0\u4E48
 - \u7136\u540E\u5728\u56DE\u590D\u672B\u5C3E\u7528\u3010\u7F16\u8F91\u5F00\u59CB\u3011...\u3010\u7F16\u8F91\u7ED3\u675F\u3011\u683C\u5F0F\u7ED9\u51FA\u6BCF\u4E2A\u4FEE\u6539\u5757
 - \u6587\u4EF6\u5FC5\u987B\u6765\u81EA\u7528\u6237\u5F53\u524D @ \u7684\u7B14\u8BB0\u5217\u8868
+- \u53EA\u505A\u7528\u6237\u660E\u786E\u8981\u6C42\u7684\u5C40\u90E8\u4FEE\u6539\uFF0C\u7981\u6B62\u501F\u673A\u6269\u5199\u6574\u8282
 
 \u683C\u5F0F\u793A\u4F8B\uFF1A
 
 \u3010\u7F16\u8F91\u5F00\u59CB\u3011
-\u6587\u4EF6\uFF1A\u8BFE\u9898\u96C6\u5408/\u4FE1\u53F7\u5206\u6790\u4E2D\u7684\u6570\u5B66\u539F\u7406.md
+\u6587\u4EF6\uFF1A\u8BFE\u9898\u96C6\u5408/\u692D\u5706\u79EF\u5206\u539F\u51FD\u6570\u89E3\u6CD5.md
 \u539F\u6587\uFF1A
 \u9700\u8981\u66FF\u6362\u7684\u7CBE\u786E\u539F\u6587\u6587\u672C
 ---
@@ -165,15 +179,16 @@ var AiClient = class {
   constructor(settings) {
     this.settings = settings;
   }
-  async complete(intent, userMessage, history) {
+  async complete(intent, userMessage, history, systemPrompt) {
     if (!this.settings.apiKey.trim()) {
       throw new Error("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u586B\u5199 API Key");
     }
+    const system = systemPrompt != null ? systemPrompt : SYSTEM_PROMPTS[intent];
     let response;
     if (this.settings.apiProvider === "anthropic") {
-      response = await this.completeAnthropic(intent, userMessage, history);
+      response = await this.completeAnthropic(intent, userMessage, history, system);
     } else {
-      response = await this.completeDeepSeek(intent, userMessage, history);
+      response = await this.completeDeepSeek(intent, userMessage, history, system);
     }
     return this.normalizeLatex(response);
   }
@@ -200,21 +215,22 @@ var AiClient = class {
     return this.completeDeepSeek(
       "check",
       "\u56DE\u590D OK \u4E24\u4E2A\u5B57\u6BCD\u5373\u53EF",
-      []
+      [],
+      SYSTEM_PROMPTS.check
     );
   }
   historyLimit() {
     const turns = Math.max(0, this.settings.historyTurns);
     return turns * 2;
   }
-  async completeDeepSeek(intent, userMessage, history) {
+  async completeDeepSeek(intent, userMessage, history, system) {
     const base = this.settings.apiBaseUrl.replace(/\/$/, "");
     const urls = [
       `${base}/chat/completions`,
       `${base}/v1/chat/completions`
     ];
     const messages = [
-      { role: "system", content: SYSTEM_PROMPTS[intent] },
+      { role: "system", content: system },
       ...history.slice(-this.historyLimit()).map((m) => ({
         role: m.role,
         content: m.content
@@ -264,8 +280,8 @@ var AiClient = class {
 \u8BF7\u786E\u8BA4\uFF1A1) \u7CFB\u7EDF/ Obsidian \u4EE3\u7406\u5DF2\u5F00  2) API Key \u6B63\u786E  3) Base URL \u4E3A https://api.deepseek.com`
     );
   }
-  async completeAnthropic(intent, userMessage, history) {
-    var _a;
+  async completeAnthropic(intent, userMessage, history, system) {
+    var _a2;
     const messages = [
       ...history.slice(-this.historyLimit()),
       { role: "user", content: userMessage }
@@ -274,7 +290,7 @@ var AiClient = class {
       model: this.settings.model,
       max_tokens: 8192,
       stream: false,
-      system: SYSTEM_PROMPTS[intent],
+      system,
       messages: messages.map((m) => ({
         role: m.role,
         content: m.content
@@ -307,19 +323,19 @@ var AiClient = class {
       );
     }
     const json = response.json;
-    const text = ((_a = json.content) != null ? _a : []).filter((b) => b.type === "text" && b.text).map((b) => b.text).join("\n").trim();
+    const text = ((_a2 = json.content) != null ? _a2 : []).filter((b) => b.type === "text" && b.text).map((b) => b.text).join("\n").trim();
     if (!text) {
       throw new Error(`Anthropic \u8FD4\u56DE\u65E0\u6B63\u6587: ${response.text.slice(0, 300)}`);
     }
     return text;
   }
   parseChatResponse(status, rawText, json) {
-    var _a, _b, _c, _d, _e;
+    var _a2, _b, _c, _d, _e;
     if (status !== 200) {
       throw new Error(`API ${status}: ${rawText.slice(0, 400)}`);
     }
     const data = json;
-    if ((_a = data.error) == null ? void 0 : _a.message) {
+    if ((_a2 = data.error) == null ? void 0 : _a2.message) {
       throw new Error(data.error.message);
     }
     const message = (_c = (_b = data.choices) == null ? void 0 : _b[0]) == null ? void 0 : _c.message;
@@ -330,6 +346,75 @@ var AiClient = class {
     throw new Error(
       `API 200 \u4F46\u65E0\u6B63\u6587\u3002\u539F\u59CB\u54CD\u5E94: ${rawText.slice(0, 350)}`
     );
+  }
+  /**
+   * Raw system+user completion for ghost FIM (no intent prompts, short max_tokens).
+   * DeepSeek OpenAI-compatible only for speed; Anthropic falls back to same chat shape via messages.
+   */
+  async completeRaw(system, user, opts) {
+    var _a2, _b, _c;
+    if (!this.settings.apiKey.trim()) {
+      throw new Error("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u586B\u5199 API Key");
+    }
+    const maxTokens = (_a2 = opts == null ? void 0 : opts.maxTokens) != null ? _a2 : 120;
+    const temperature = (_b = opts == null ? void 0 : opts.temperature) != null ? _b : 0.2;
+    const model = (_c = opts == null ? void 0 : opts.model) != null ? _c : this.settings.model;
+    if (this.settings.apiProvider === "anthropic") {
+      const response2 = await (0, import_obsidian.requestUrl)({
+        url: "https://api.anthropic.com/v1/messages",
+        method: "POST",
+        contentType: "application/json",
+        headers: {
+          "x-api-key": this.settings.apiKey,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          system,
+          messages: [{ role: "user", content: user }],
+          stream: false
+        }),
+        throw: false
+      });
+      const text2 = this.completeAnthropicParse(response2.status, response2.text, response2.json);
+      return this.normalizeLatex(text2);
+    }
+    const base = this.settings.apiBaseUrl.replace(/\/$/, "");
+    const url = `${base}/chat/completions`;
+    const body = {
+      model,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ],
+      stream: false,
+      max_tokens: maxTokens,
+      temperature,
+      thinking: { type: "disabled" }
+    };
+    const response = await (0, import_obsidian.requestUrl)({
+      url,
+      method: "POST",
+      contentType: "application/json",
+      headers: { Authorization: `Bearer ${this.settings.apiKey}` },
+      body: JSON.stringify(body),
+      throw: false
+    });
+    const text = this.parseChatResponse(response.status, response.text, response.json);
+    return this.normalizeLatex(text);
+  }
+  completeAnthropicParse(status, rawText, json) {
+    var _a2;
+    if (status !== 200) {
+      throw new Error(`Anthropic API ${status}: ${rawText.slice(0, 400)}`);
+    }
+    const data = json;
+    const text = ((_a2 = data.content) != null ? _a2 : []).filter((b) => b.type === "text" && b.text).map((b) => b.text).join("\n").trim();
+    if (!text) {
+      throw new Error(`Anthropic \u8FD4\u56DE\u65E0\u6B63\u6587: ${rawText.slice(0, 300)}`);
+    }
+    return text;
   }
 };
 
@@ -395,10 +480,10 @@ var CollabController = class {
   }
   /** 从 @ 列表移除笔记 */
   removeBoundNote(path) {
-    var _a;
+    var _a2;
     this.boundNotePaths = this.boundNotePaths.filter((p) => p !== path);
     if (this.activeNotePath === path) {
-      this.activeNotePath = (_a = this.boundNotePaths[0]) != null ? _a : "";
+      this.activeNotePath = (_a2 = this.boundNotePaths[0]) != null ? _a2 : "";
     }
     if (this.activeNotePath) {
       this.syncPendingState(this.activeNotePath);
@@ -411,7 +496,7 @@ var CollabController = class {
     void this.plugin.refreshConversationUI();
   }
   tryBindFromWorkspace() {
-    var _a;
+    var _a2;
     const count = this.boundNotePaths.length;
     const md = this.plugin.getAnyMarkdownView();
     if (md == null ? void 0 : md.file) {
@@ -421,7 +506,7 @@ var CollabController = class {
     if (count > 0) return;
     for (const leaf of this.plugin.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
-      if ((_a = view.file) == null ? void 0 : _a.path.endsWith(".md")) {
+      if ((_a2 = view.file) == null ? void 0 : _a2.path.endsWith(".md")) {
         this.addBoundNote(view.file.path);
         return;
       }
@@ -462,10 +547,10 @@ var CollabController = class {
   }
   /** 优先读编辑器缓冲（含未保存修改），否则读磁盘 */
   async readNoteContent(path) {
-    var _a;
+    var _a2;
     for (const leaf of this.plugin.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
-      if (((_a = view.file) == null ? void 0 : _a.path) === path) {
+      if (((_a2 = view.file) == null ? void 0 : _a2.path) === path) {
         return view.editor.getValue();
       }
     }
@@ -512,10 +597,10 @@ var CollabController = class {
     this.syncPendingState(path);
   }
   syncPendingState(path) {
-    var _a;
+    var _a2;
     const session = this.sessions.get(path);
     this.activeNotePath = path;
-    this.pendingText = (_a = session == null ? void 0 : session.pendingText) != null ? _a : "";
+    this.pendingText = (_a2 = session == null ? void 0 : session.pendingText) != null ? _a2 : "";
     this.pendingWords = countChars(this.pendingText);
     this.plugin.refreshSidebar();
   }
@@ -533,20 +618,20 @@ var CollabController = class {
     void this.initSessionFromVault(this.activeNotePath);
   }
   getSelectionText() {
-    var _a;
+    var _a2;
     if (!this.plugin.settings.useSelection) return "";
     if (this.cachedSelection && this.cachedSelectionPath === this.activeNotePath) {
       return this.cachedSelection;
     }
     const view = this.plugin.getAnyMarkdownView();
-    if (((_a = view == null ? void 0 : view.file) == null ? void 0 : _a.path) === this.activeNotePath) {
+    if (((_a2 = view == null ? void 0 : view.file) == null ? void 0 : _a2.path) === this.activeNotePath) {
       const live = view.editor.getSelection().trim();
       if (live) return live;
     }
     return this.cachedSelection;
   }
   async buildPayload(app, userPrompt, intent) {
-    var _a;
+    var _a2;
     const filePath = this.activeNotePath;
     if (!filePath) return null;
     const prompt = userPrompt.trim();
@@ -594,7 +679,7 @@ ${otherContexts.join("\n\n---\n\n")}`;
     }
     if (pending) {
       const session = this.sessions.get(filePath);
-      const base = (_a = session == null ? void 0 : session.baseline.trim()) != null ? _a : "";
+      const base = (_a2 = session == null ? void 0 : session.baseline.trim()) != null ? _a2 : "";
       const ctx = this.truncateContext(base);
       return {
         filePath,
@@ -717,8 +802,8 @@ var IntentModal = class extends import_obsidian3.Modal {
     });
   }
   getText() {
-    var _a, _b;
-    return (_b = (_a = this.textarea) == null ? void 0 : _a.value) != null ? _b : "";
+    var _a2, _b;
+    return (_b = (_a2 = this.textarea) == null ? void 0 : _a2.value) != null ? _b : "";
   }
   async waitForChoice() {
     this.open();
@@ -818,12 +903,12 @@ var MemorySessionManager = class {
     return this.sessions.get(notePath);
   }
   isActive(notePath) {
-    var _a, _b;
-    return (_b = (_a = this.sessions.get(notePath)) == null ? void 0 : _a.active) != null ? _b : false;
+    var _a2, _b;
+    return (_b = (_a2 = this.sessions.get(notePath)) == null ? void 0 : _a2.active) != null ? _b : false;
   }
   getRounds(notePath) {
-    var _a, _b;
-    return (_b = (_a = this.sessions.get(notePath)) == null ? void 0 : _a.rounds) != null ? _b : [];
+    var _a2, _b;
+    return (_b = (_a2 = this.sessions.get(notePath)) == null ? void 0 : _a2.rounds) != null ? _b : [];
   }
   /** 连续模式：开始一段新记忆（清空当前轮次） */
   start(notePath) {
@@ -861,8 +946,8 @@ var MemorySessionManager = class {
     });
   }
   getApiHistory(notePath, maxTurns) {
-    var _a, _b;
-    const rounds = (_b = (_a = this.sessions.get(notePath)) == null ? void 0 : _a.rounds) != null ? _b : [];
+    var _a2, _b;
+    const rounds = (_b = (_a2 = this.sessions.get(notePath)) == null ? void 0 : _a2.rounds) != null ? _b : [];
     const slice = maxTurns > 0 ? rounds.slice(-maxTurns) : maxTurns === 0 ? [] : rounds;
     const msgs = [];
     for (const r of slice) {
@@ -1050,17 +1135,18 @@ var TopicCollabSidebarView = class extends import_obsidian6.ItemView {
     this.bufferEl = controls.createDiv({
       cls: "topic-collab-buffer is-empty"
     });
-    const promptRow = controls.createDiv({ cls: "topic-collab-prompt-row" });
-    this.promptArea = promptRow.createEl("textarea", {
+    const promptWrap = controls.createDiv({ cls: "topic-collab-prompt-wrap" });
+    this.promptArea = promptWrap.createEl("textarea", {
       cls: "topic-collab-prompt",
       attr: {
         placeholder: "\u53EF\u9009\uFF1A\u5199\u5177\u4F53\u95EE\u9898\u2026",
         rows: "2"
       }
     });
-    this.clearBtn = promptRow.createEl("button", {
+    this.clearBtn = promptWrap.createEl("button", {
       cls: "topic-collab-clear-btn",
-      text: "\u6E05"
+      text: "\u6E05\u7A7A",
+      attr: { type: "button", title: "\u6E05\u7A7A\u8F93\u5165\u4E0E\u9009\u533A\u7F13\u51B2" }
     });
     this.clearBtn.addEventListener("click", () => {
       this.clearBuffer();
@@ -1069,15 +1155,17 @@ var TopicCollabSidebarView = class extends import_obsidian6.ItemView {
       this.plugin.collab.userPrompt = this.promptArea.value;
     });
     this.actionsEl = controls.createDiv({ cls: "topic-collab-actions" });
-    ALL_INTENTS.forEach((intent) => {
+    const actionBtn = (text, onClick) => {
       const btn = this.actionsEl.createEl("button", {
-        text: INTENT_LABELS[intent],
+        text,
         cls: "topic-collab-action-btn"
       });
-      btn.addEventListener("click", () => {
-        void this.plugin.runIntent(intent);
-      });
-    });
+      btn.addEventListener("click", onClick);
+      return btn;
+    };
+    actionBtn(INTENT_LABELS.check, () => void this.plugin.runIntent("check"));
+    actionBtn("\u65E0\u76EE\u6807", () => void this.plugin.runFreeform());
+    actionBtn(INTENT_LABELS.edit, () => void this.plugin.runIntent("edit"));
     const responseWrap = containerEl.createDiv({
       cls: "topic-collab-response-wrap"
     });
@@ -1091,7 +1179,7 @@ var TopicCollabSidebarView = class extends import_obsidian6.ItemView {
     this.render();
   }
   render() {
-    var _a, _b;
+    var _a2, _b;
     if (!this.boundNoteEl) return;
     const c = this.plugin.collab;
     this.boundNoteEl.empty();
@@ -1170,7 +1258,7 @@ var TopicCollabSidebarView = class extends import_obsidian6.ItemView {
     const recording = this.plugin.isMemoryRecording();
     const needStart = continuous && !recording;
     const canSubmit = c.collabActive && hasBound && hasRequest && !this.plugin.isStreaming && !needStart;
-    (_a = this.actionsEl) == null ? void 0 : _a.toggleClass("is-muted", !canSubmit);
+    (_a2 = this.actionsEl) == null ? void 0 : _a2.toggleClass("is-muted", !canSubmit);
     (_b = this.actionBarEl) == null ? void 0 : _b.toggleClass(
       "is-hidden",
       !this.lastResponse.trim() || this.plugin.isStreaming
@@ -1185,12 +1273,18 @@ var TopicCollabSidebarView = class extends import_obsidian6.ItemView {
     const modeRow = this.memoryBarEl.createDiv({
       cls: "topic-collab-memory-mode"
     });
-    const toggleBtn = modeRow.createEl("button", {
+    const singleBtn = modeRow.createEl("button", {
       cls: "topic-collab-mode-btn",
-      attr: { "data-action": "mode-toggle" }
+      text: "\u5355\u6B21",
+      attr: { "data-action": "mode-single", type: "button" }
     });
-    toggleBtn.setText(mode === "continuous" ? "\u8FDE\u7EED" : "\u5355\u6B21");
-    toggleBtn.toggleClass("is-continuous", mode === "continuous");
+    const contBtn = modeRow.createEl("button", {
+      cls: "topic-collab-mode-btn",
+      text: "\u8FDE\u7EED",
+      attr: { "data-action": "mode-continuous", type: "button" }
+    });
+    singleBtn.toggleClass("is-active", mode === "single");
+    contBtn.toggleClass("is-active", mode === "continuous");
     if (mode === "continuous") {
       const ctrl = this.memoryBarEl.createDiv({
         cls: "topic-collab-memory-ctrl"
@@ -1206,12 +1300,13 @@ var TopicCollabSidebarView = class extends import_obsidian6.ItemView {
         });
         ctrl.createEl("button", {
           text: "\u7ED3\u675F\u8BB0\u5FC6",
-          attr: { "data-action": "memory-end" }
+          attr: { "data-action": "memory-end", type: "button" }
         });
       } else {
         ctrl.createEl("button", {
           text: "\u5F00\u59CB\u8BB0\u5FC6",
-          attr: { "data-action": "memory-start" }
+          cls: "topic-collab-memory-start",
+          attr: { "data-action": "memory-start", type: "button" }
         });
       }
     }
@@ -1260,9 +1355,9 @@ var TopicCollabSidebarView = class extends import_obsidian6.ItemView {
     );
   }
   beginStreaming() {
-    var _a;
+    var _a2;
     void this.renderConversation("\u7B49\u5F85\u56DE\u590D\u2026\uFF08Thinking \u6A21\u5F0F\u53EF\u80FD 30\u201390 \u79D2\uFF09");
-    (_a = this.containerEl) == null ? void 0 : _a.toggleClass("is-streaming", true);
+    (_a2 = this.containerEl) == null ? void 0 : _a2.toggleClass("is-streaming", true);
     this.render();
   }
   endStreaming() {
@@ -1278,12 +1373,12 @@ var TopicCollabSidebarView = class extends import_obsidian6.ItemView {
     this.render();
   }
   setStreaming(active) {
-    var _a;
-    (_a = this.containerEl) == null ? void 0 : _a.toggleClass("is-streaming", active);
+    var _a2;
+    (_a2 = this.containerEl) == null ? void 0 : _a2.toggleClass("is-streaming", active);
   }
   getPrompt() {
-    var _a, _b;
-    return (_b = (_a = this.promptArea) == null ? void 0 : _a.value) != null ? _b : "";
+    var _a2, _b;
+    return (_b = (_a2 = this.promptArea) == null ? void 0 : _a2.value) != null ? _b : "";
   }
   clearPrompt() {
     if (this.promptArea) {
@@ -1306,9 +1401,746 @@ function createRibbonIcon(el) {
 }
 
 // src/version.ts
-var PLUGIN_VERSION = "0.6.0";
+var PLUGIN_VERSION = "0.8.0";
+
+// src/ghost-completion.ts
+var import_view = require("@codemirror/view");
+var import_state = require("@codemirror/state");
+var GhostWidget = class extends import_view.WidgetType {
+  constructor(text) {
+    super();
+    this.text = text;
+  }
+  eq(other) {
+    return other.text === this.text;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "topic-collab-ghost";
+    span.textContent = this.text;
+    return span;
+  }
+  ignoreEvent() {
+    return true;
+  }
+};
+var setGhost = import_state.StateEffect.define();
+var ghostField = import_state.StateField.define({
+  create: () => null,
+  update(value, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setGhost)) return e.value;
+    }
+    if (tr.docChanged || tr.selection) return null;
+    return value;
+  },
+  provide: (f) => import_view.EditorView.decorations.from(f, (v) => {
+    if (!v || !v.text) return import_view.Decoration.none;
+    return import_view.Decoration.set([
+      import_view.Decoration.widget({
+        widget: new GhostWidget(v.text),
+        side: 1
+      }).range(v.pos)
+    ]);
+  })
+});
+function shouldRequestGhost(doc, pos, latexBias) {
+  const before = doc.slice(Math.max(0, pos - 400), pos);
+  const after = doc.slice(pos, Math.min(doc.length, pos + 80));
+  const dollars = (before.match(/\$/g) || []).length;
+  const inInlineMath = dollars % 2 === 1;
+  const lastOpenBlock = before.lastIndexOf("$$");
+  const lastCloseHint = before.lastIndexOf("$$\n");
+  const inBlockMath = lastOpenBlock >= 0 && (lastCloseHint < lastOpenBlock || !before.slice(lastOpenBlock + 2).includes("$$"));
+  if (inInlineMath || inBlockMath || /\\begin\{/.test(before.slice(-80))) {
+    return "latex";
+  }
+  if (/\[公式\]\s*$/.test(before)) return "latex";
+  if (latexBias >= 0.85) {
+    if (/[=\\]\s*$/.test(before) || /\$\s*$/.test(before)) return "latex";
+    return "none";
+  }
+  if (latexBias <= 0.35 && /[。；：\n]\s*$/.test(before) && after.trim() === "") {
+    return "prose";
+  }
+  if (/\\\\\s*$/.test(before) || /[=,]\s*$/.test(before)) return "latex";
+  return "none";
+}
+function buildFimPrompt(prefix, suffix, mode, latexBias) {
+  const latexHeavy = latexBias >= 0.5;
+  const system = mode === "latex" || latexHeavy ? `\u4F60\u662F Obsidian \u6570\u5B66\u7B14\u8BB0\u7684 fill-in-the-middle \u8865\u5168\u5668\u3002
+\u53EA\u8F93\u51FA\u5E94\u63D2\u5165\u5728\u5149\u6807\u5904\u7684\u7EED\u5199\u7247\u6BB5\uFF0C\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981 markdown \u56F4\u680F\u3001\u4E0D\u8981\u91CD\u590D prefix\u3002
+\u4F18\u5148\u8865\u5168 LaTeX\uFF08$...$ \u6216\u516C\u5F0F\u7247\u6BB5\uFF09\u3002\u4E0D\u8981\u5199\u957F\u6BB5\u4E2D\u6587\u8BBA\u8FF0\u3002\u6700\u591A\u7EA6 120 \u5B57\u7B26\u3002` : `\u4F60\u662F Obsidian \u8BFE\u9898\u7B14\u8BB0\u7684 fill-in-the-middle \u8865\u5168\u5668\u3002
+\u53EA\u8F93\u51FA\u5149\u6807\u5904\u77ED\u7EED\u5199\u3002\u4E0D\u8981\u89E3\u91CA\u3002\u4E0D\u8981\u590D\u8FF0 prefix\u3002\u6700\u591A\u7EA6 80 \u6C49\u5B57\u6216\u7B49\u4EF7\u7B26\u53F7\u3002`;
+  const user = `PREFIX:
+<<<
+${prefix.slice(-1200)}
+>>>
+
+SUFFIX:
+<<<
+${suffix.slice(0, 400)}
+>>>
+
+MODE: ${mode}
+\u8F93\u51FA\u7EED\u5199\u7247\u6BB5\uFF1A`;
+  return { system, user };
+}
+var GhostController = class {
+  constructor(host) {
+    this.host = host;
+    this.timer = null;
+    this.seq = 0;
+    this.localSeq = 0;
+    this.inFlight = false;
+    this.lastRequestAt = 0;
+    this.lastView = null;
+  }
+  /** Track active editor from ViewPlugin updates. */
+  attachView(view) {
+    this.lastView = view;
+  }
+  clearTimer() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+  /** Cancel pending idle request; bump seq so in-flight result is ignored. */
+  cancelPending() {
+    this.clearTimer();
+    this.seq++;
+    this.localSeq++;
+  }
+  scheduleIdle(view) {
+    const settings = this.host.getSettings();
+    if (settings.ghostMode !== "idle") return;
+    this.attachView(view);
+    this.clearTimer();
+    const delay = Math.max(800, settings.ghostDebounceMs);
+    const my = ++this.seq;
+    this.timer = setTimeout(() => {
+      void this.request(view, my, "idle");
+    }, delay);
+  }
+  /**
+   * 本地补全（命令 / 本页 token / 词库）。零 LLM。
+   * CM 禁止在 ViewPlugin.update 内 dispatch，故延后到下一个宏任务；
+   * localSeq 用于丢弃过期计算。
+   */
+  scheduleLocal(view) {
+    var _a2, _b, _c;
+    const settings = this.host.getSettings();
+    if (!settings.localCompletion) return;
+    if (!this.host.local) return;
+    const my = ++this.localSeq;
+    const path = (_c = (_b = (_a2 = this.host).getActiveNotePath) == null ? void 0 : _b.call(_a2)) != null ? _c : "";
+    setTimeout(() => {
+      if (my !== this.localSeq) return;
+      const doc = view.state.doc.toString();
+      const pos = view.state.selection.main.head;
+      this.host.local.updateDocument(doc);
+      const cand = this.host.local.complete(doc, pos, path);
+      if (cand) {
+        view.dispatch({ effects: setGhost.of(cand) });
+      }
+    }, 0);
+  }
+  /** Manual hotkey / command. */
+  requestManual(view) {
+    var _a2, _b, _c, _d;
+    const settings = this.host.getSettings();
+    if (settings.ghostMode === "off") {
+      (_b = (_a2 = this.host).notify) == null ? void 0 : _b.call(_a2, "\u5E7D\u7075\u8865\u5168\u5DF2\u5173\u95ED\uFF08\u8BBE\u7F6E \u2192 \u5E7D\u7075\u6A21\u5F0F\uFF09");
+      return;
+    }
+    const v = view != null ? view : this.lastView;
+    if (!v) {
+      (_d = (_c = this.host).notify) == null ? void 0 : _d.call(_c, "\u8BF7\u5148\u628A\u5149\u6807\u653E\u5728\u7B14\u8BB0\u7F16\u8F91\u5668\u91CC");
+      return;
+    }
+    this.clearTimer();
+    const my = ++this.seq;
+    void this.request(v, my, "manual");
+  }
+  async request(view, my, reason) {
+    var _a2, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
+    const settings = this.host.getSettings();
+    if (settings.ghostMode === "off") return;
+    if (settings.ghostMode === "idle" && reason !== "idle" && reason !== "manual")
+      return;
+    if (settings.ghostMode === "manual" && reason === "idle") return;
+    if (!settings.apiKey.trim()) {
+      if (reason === "manual") (_b = (_a2 = this.host).notify) == null ? void 0 : _b.call(_a2, "\u8BF7\u5148\u586B\u5199 API Key");
+      return;
+    }
+    const cooldown = Math.max(3e3, settings.ghostCooldownMs);
+    const now = Date.now();
+    if (this.inFlight) {
+      if (reason === "manual") (_d = (_c = this.host).notify) == null ? void 0 : _d.call(_c, "\u8865\u5168\u8BF7\u6C42\u8FDB\u884C\u4E2D\uFF0C\u8BF7\u7A0D\u5019");
+      return;
+    }
+    if (now - this.lastRequestAt < cooldown) {
+      const wait = Math.ceil((cooldown - (now - this.lastRequestAt)) / 1e3);
+      if (reason === "manual") {
+        (_f = (_e = this.host).notify) == null ? void 0 : _f.call(_e, `\u51B7\u5374\u4E2D\uFF0C\u7EA6 ${wait}s \u540E\u518D\u8BD5\uFF08\u9632\u5237\u7206 API\uFF09`);
+      }
+      return;
+    }
+    const pos = view.state.selection.main.head;
+    const doc = view.state.doc.toString();
+    const mode = shouldRequestGhost(doc, pos, settings.latexBias);
+    if (mode === "none") {
+      if (reason === "manual") {
+        (_h = (_g = this.host).notify) == null ? void 0 : _h.call(
+          _g,
+          "\u5F53\u524D\u4F4D\u7F6E\u4E0D\u50CF\u516C\u5F0F\u73AF\u5883\uFF08\u8C03\u4F4E latexBias \u6216\u5199\u5230 $...$ \u5185\u518D\u8BD5\uFF09"
+        );
+      }
+      return;
+    }
+    const prefix = doc.slice(0, pos);
+    const suffix = doc.slice(pos);
+    const { system, user } = buildFimPrompt(
+      prefix,
+      suffix,
+      mode,
+      settings.latexBias
+    );
+    this.inFlight = true;
+    this.lastRequestAt = now;
+    if (reason === "manual") (_j = (_i = this.host).notify) == null ? void 0 : _j.call(_i, "\u6B63\u5728\u8BF7\u6C42\u5E7D\u7075\u8865\u5168\u2026");
+    try {
+      const client = this.host.getAiClient();
+      let text = await client.completeRaw(system, user, {
+        maxTokens: mode === "latex" ? 160 : 100,
+        temperature: 0.2,
+        model: settings.ghostModel
+      });
+      if (my !== this.seq) return;
+      text = sanitizeGhost(text, mode);
+      if (!text) {
+        if (reason === "manual") (_l = (_k = this.host).notify) == null ? void 0 : _l.call(_k, "\u6A21\u578B\u672A\u8FD4\u56DE\u53EF\u7528\u7247\u6BB5");
+        return;
+      }
+      view.dispatch({
+        effects: setGhost.of({ text, pos: view.state.selection.main.head })
+      });
+    } catch (e) {
+      console.warn("[topic-collab] ghost failed", e);
+      if (reason === "manual") {
+        const msg = e instanceof Error ? e.message : String(e);
+        (_n = (_m = this.host).notify) == null ? void 0 : _n.call(_m, `\u8865\u5168\u5931\u8D25\uFF1A${msg.slice(0, 80)}`);
+      }
+    } finally {
+      this.inFlight = false;
+    }
+  }
+};
+function createGhostExtension(controller) {
+  const plugin = import_view.ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.view = view;
+        this.decorations = import_view.Decoration.none;
+        controller.attachView(view);
+      }
+      update(update) {
+        controller.attachView(update.view);
+        if (!(update.docChanged || update.selectionSet)) return;
+        controller.cancelPending();
+        if (update.docChanged) {
+          controller.scheduleLocal(update.view);
+          controller.scheduleIdle(update.view);
+        }
+      }
+    }
+  );
+  const acceptKeymap = import_state.Prec.high(
+    import_view.keymap.of([
+      {
+        key: "Tab",
+        run: (view) => {
+          var _a2;
+          const g = view.state.field(ghostField, false);
+          if (!(g == null ? void 0 : g.text)) return false;
+          view.dispatch({
+            changes: { from: g.pos, insert: g.text },
+            selection: { anchor: g.pos + ((_a2 = g.cursorOffset) != null ? _a2 : g.text.length) },
+            effects: setGhost.of(null)
+          });
+          return true;
+        }
+      },
+      {
+        key: "Escape",
+        run: (view) => {
+          const g = view.state.field(ghostField, false);
+          if (!g) return false;
+          view.dispatch({ effects: setGhost.of(null) });
+          return true;
+        }
+      }
+    ])
+  );
+  return [ghostField, plugin, acceptKeymap];
+}
+function sanitizeGhost(raw, mode) {
+  let t = raw.trim();
+  t = t.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
+  t = t.replace(/^续写片段[：:]\s*/i, "");
+  if (t.startsWith("PREFIX") || t.startsWith("<<<")) return "";
+  if (t.startsWith('"') && t.endsWith('"') || t.startsWith("\u300C") && t.endsWith("\u300D")) {
+    t = t.slice(1, -1);
+  }
+  if (mode === "latex" && t.length > 200) t = t.slice(0, 200);
+  if (mode === "prose" && t.length > 120) t = t.slice(0, 120);
+  if ((t.match(/[\u4e00-\u9fff]/g) || []).length > 80 && mode === "latex") {
+    if (!/[\\$^=_{}]/.test(t)) return "";
+  }
+  return t;
+}
+
+// src/latex-dict.ts
+var PLAIN = /* @__PURE__ */ new Set([
+  // 希腊字母（小写）
+  "alpha",
+  "beta",
+  "gamma",
+  "delta",
+  "epsilon",
+  "zeta",
+  "eta",
+  "theta",
+  "iota",
+  "kappa",
+  "lambda",
+  "mu",
+  "nu",
+  "xi",
+  "omicron",
+  "pi",
+  "rho",
+  "sigma",
+  "tau",
+  "upsilon",
+  "phi",
+  "chi",
+  "psi",
+  "omega",
+  // 希腊大写（LaTeX 提供的）
+  "Gamma",
+  "Delta",
+  "Theta",
+  "Lambda",
+  "Xi",
+  "Pi",
+  "Sigma",
+  "Upsilon",
+  "Phi",
+  "Psi",
+  "Omega",
+  // 函数
+  "sin",
+  "cos",
+  "tan",
+  "cot",
+  "sec",
+  "csc",
+  "sinh",
+  "cosh",
+  "tanh",
+  "coth",
+  "arcsin",
+  "arccos",
+  "arctan",
+  "log",
+  "ln",
+  "exp",
+  "max",
+  "min",
+  "arg",
+  "dim",
+  "deg",
+  "det",
+  "gcd",
+  "ker",
+  "pr",
+  // 关系 / 符号
+  "in",
+  "notin",
+  "subset",
+  "supset",
+  "subseteq",
+  "supseteq",
+  "cup",
+  "cap",
+  "emptyset",
+  "varnothing",
+  "infty",
+  "partial",
+  "nabla",
+  "perp",
+  "parallel",
+  "sim",
+  "simeq",
+  "approx",
+  "cong",
+  "neq",
+  "ne",
+  "leq",
+  "ge",
+  "ll",
+  "gg",
+  "equiv",
+  "propto",
+  // 箭头
+  "to",
+  "rightarrow",
+  "leftarrow",
+  "leftrightarrow",
+  "Rightarrow",
+  "Leftarrow",
+  "Leftrightarrow",
+  "uparrow",
+  "downarrow",
+  "mapsto",
+  "hookrightarrow",
+  // 点
+  "cdots",
+  "ldots",
+  "vdots",
+  "ddots",
+  // 其它符号
+  "cdot",
+  "times",
+  "div",
+  "pm",
+  "mp",
+  "ast",
+  "star",
+  "circ",
+  "bullet",
+  "oplus",
+  "otimes",
+  "ominus",
+  "odot",
+  "quad",
+  "qquad",
+  "left",
+  "right"
+]);
+var TEMPLATE = /* @__PURE__ */ new Map([
+  ["frac", "\\frac{}{}"],
+  ["cfrac", "\\cfrac{}{}"],
+  ["sqrt", "\\sqrt{}"],
+  ["int", "\\int_{}^{}"],
+  ["iint", "\\iint_{}^{}"],
+  ["iiint", "\\iiint_{}^{}"],
+  ["oint", "\\oint_{}^{}"],
+  ["sum", "\\sum_{}^{}"],
+  ["prod", "\\prod_{}^{}"],
+  ["coprod", "\\coprod_{}^{}"],
+  ["lim", "\\lim_{}"],
+  ["limsup", "\\limsup_{}"],
+  ["liminf", "\\liminf_{}"],
+  ["hat", "\\hat{}"],
+  ["bar", "\\bar{}"],
+  ["vec", "\\vec{}"],
+  ["tilde", "\\tilde{}"],
+  ["dot", "\\dot{}"],
+  ["ddot", "\\ddot{}"],
+  ["overline", "\\overline{}"],
+  ["underline", "\\underline{}"],
+  ["overrightarrow", "\\overrightarrow{}"],
+  ["overleftarrow", "\\overleftarrow{}"],
+  ["text", "\\text{}"],
+  ["mathbb", "\\mathbb{}"],
+  ["mathcal", "\\mathcal{}"],
+  ["mathrm", "\\mathrm{}"],
+  ["mathbf", "\\mathbf{}"],
+  ["operatorname", "\\operatorname{}"],
+  ["begin", "\\begin{}"],
+  ["underset", "\\underset{}{}"],
+  ["overset", "\\overset{}{}"],
+  ["stackrel", "\\stackrel{}{}"]
+]);
+function insertFor(token, tpl) {
+  const insert = tpl.slice(token.length + 1);
+  const braceIdx = tpl.indexOf("{");
+  const cursorOffset = braceIdx >= 0 ? braceIdx - token.length : insert.length;
+  return { insert, cursorOffset };
+}
+function findLatexCompletion(before) {
+  const m = before.match(/\\[A-Za-z]*$/);
+  if (!m) return null;
+  const token = m[0].slice(1);
+  if (!token) return null;
+  if (TEMPLATE.has(token)) {
+    const { insert, cursorOffset } = insertFor(token, TEMPLATE.get(token));
+    if (!insert) return null;
+    return { token, insert, cursorOffset };
+  }
+  let best = null;
+  for (const [name, tpl] of TEMPLATE) {
+    if (name.startsWith(token) && name.length > token.length) {
+      if (!best || name.length < best.name.length) best = { name, tpl };
+    }
+  }
+  if (best) {
+    const { insert, cursorOffset } = insertFor(token, best.tpl);
+    if (insert) return { token, insert, cursorOffset };
+  }
+  let plainBest = "";
+  for (const name of PLAIN) {
+    if (name.startsWith(token) && name.length > token.length) {
+      if (!plainBest || name.length < plainBest.length) plainBest = name;
+    }
+  }
+  if (plainBest) {
+    return { token, insert: plainBest.slice(token.length) };
+  }
+  return null;
+}
+
+// src/page-tokens.ts
+var IDENT_RE = /(?<!\\)[A-Za-z][A-Za-z0-9]*(?:_\{[^}]*\}|_[A-Za-z0-9]+)?/g;
+var CMD_RE = /\\([A-Za-z]+)/g;
+function mathZones(doc) {
+  const zones = [];
+  let i = 0;
+  const n = doc.length;
+  while (i < n) {
+    const d = doc.indexOf("$$", i);
+    const s = doc.indexOf("$", i);
+    if (d === -1 && s === -1) break;
+    if (s !== -1 && (d === -1 || s < d)) {
+      const close = doc.indexOf("$", s + 1);
+      if (close === -1) break;
+      zones.push([s + 1, close]);
+      i = close + 1;
+    } else {
+      const close = doc.indexOf("$$", d + 2);
+      if (close === -1) break;
+      zones.push([d + 2, close]);
+      i = close + 2;
+    }
+  }
+  return zones;
+}
+var PageTokenIndex = class {
+  constructor() {
+    this.stats = /* @__PURE__ */ new Map();
+  }
+  /** 重建索引（每页小，全量重扫；由调用方按需触发）。 */
+  rebuild(doc) {
+    var _a2, _b;
+    const next = /* @__PURE__ */ new Map();
+    const bump = (key, pos) => {
+      const s = next.get(key);
+      if (s) {
+        s.count++;
+        if (pos > s.lastPos) s.lastPos = pos;
+      } else {
+        next.set(key, { count: 1, lastPos: pos });
+      }
+    };
+    for (const [start, end] of mathZones(doc)) {
+      const seg = doc.slice(start, end);
+      for (const m of seg.matchAll(IDENT_RE)) {
+        bump(m[0], start + ((_a2 = m.index) != null ? _a2 : 0));
+      }
+      for (const m of seg.matchAll(CMD_RE)) {
+        bump("\\" + m[1], start + ((_b = m.index) != null ? _b : 0));
+      }
+    }
+    this.stats = next;
+  }
+  /** 取最近/最高频、且以 prefix 开头的标识符（不含完全相等者）。 */
+  query(prefix) {
+    if (!prefix) return null;
+    let best = "";
+    let bestScore = -1;
+    for (const [key, s] of this.stats) {
+      if (key === prefix || !key.startsWith(prefix)) continue;
+      const score = s.lastPos * 1e3 + s.count;
+      if (score > bestScore) {
+        bestScore = score;
+        best = key;
+      }
+    }
+    return best || null;
+  }
+};
+
+// src/local-completer.ts
+var MAX_LEXICON_INSERT = 40;
+function inMathZone(doc, pos) {
+  const before = doc.slice(0, pos);
+  const dollars = (before.match(/\$/g) || []).length;
+  if (dollars % 2 === 1) return true;
+  const lastOpen = before.lastIndexOf("$$");
+  const lastClose = before.lastIndexOf("$$\n");
+  if (lastOpen >= 0 && (lastClose < lastOpen || !before.slice(lastOpen + 2).includes("$$"))) {
+    return true;
+  }
+  if (/\\begin\{[A-Za-z]*\}/.test(before.slice(-60))) return true;
+  return false;
+}
+function currentMathPrefix(doc, pos) {
+  const before = doc.slice(0, pos);
+  const lastDollar = before.lastIndexOf("$");
+  if (lastDollar >= 0) return doc.slice(lastDollar + 1, pos);
+  return "";
+}
+function matchAlias(before, lex) {
+  var _a2, _b;
+  if (!((_a2 = lex == null ? void 0 : lex.aliases) == null ? void 0 : _a2.length)) return null;
+  for (const a of lex.aliases) {
+    const t = (_b = a.trigger) == null ? void 0 : _b.trim();
+    if (!t || t.length < 2 || !a.latex) continue;
+    if (before.slice(-t.length) === t) return a.latex;
+  }
+  return null;
+}
+var LocalCompleter = class {
+  constructor(host) {
+    this.host = host;
+    this.tokens = new PageTokenIndex();
+  }
+  /** 编辑变化时刷新本页 token 索引。 */
+  updateDocument(doc) {
+    this.tokens.rebuild(doc);
+  }
+  complete(doc, pos, path) {
+    const before = doc.slice(0, pos);
+    const lex = this.host.getLexicon(path);
+    if (!inMathZone(doc, pos)) {
+      const latex2 = matchAlias(before, lex);
+      if (latex2) return { text: `$${latex2}$`, pos };
+      return null;
+    }
+    if (/\\[A-Za-z]*$/.test(before)) {
+      const c = findLatexCompletion(before);
+      if (c) return { text: c.insert, pos, cursorOffset: c.cursorOffset };
+      return null;
+    }
+    const id = before.match(/[A-Za-z][A-Za-z0-9_{}]*$/);
+    if (id && id[0].length >= 2) {
+      const key = this.tokens.query(id[0]);
+      if (key) {
+        const rest = key.slice(id[0].length);
+        if (rest) return { text: rest, pos };
+      }
+    }
+    if (lex && lex.formulas.length > 0) {
+      const math = currentMathPrefix(doc, pos);
+      if (math && math.length >= 2) {
+        let best = "";
+        for (const f of lex.formulas) {
+          if (f.startsWith(math) && f.length > math.length) {
+            const rest = f.slice(math.length);
+            if (!best || rest.length < best.length) best = rest;
+          }
+        }
+        if (best) {
+          return { text: best.slice(0, MAX_LEXICON_INSERT), pos };
+        }
+      }
+    }
+    const latex = matchAlias(before, lex);
+    if (latex) return { text: latex, pos };
+    return null;
+  }
+};
+
+// src/lexicon.ts
+function contentHash(text) {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) {
+    h = (h << 5) + h + text.charCodeAt(i) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+function pathHash(p) {
+  return contentHash(p);
+}
+var LexiconStore = class _LexiconStore {
+  constructor(adapter, dir) {
+    this.adapter = adapter;
+    this.dir = dir;
+  }
+  fileFor(path) {
+    return `${this.dir}/${pathHash(path)}.json`;
+  }
+  async load(path) {
+    try {
+      const raw = await this.adapter.read(this.fileFor(path));
+      return JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+  static build(path, formulas, aliases) {
+    const sorted = [...new Set(formulas)].sort();
+    const hash = contentHash(sorted.join("\0"));
+    return { path, hash, updatedAt: Date.now(), formulas: sorted, aliases };
+  }
+  /** 幂等保存：同 hash 不写盘。返回写入的词库；未变化返回 null。 */
+  async save(path, formulas, aliases) {
+    const lex = _LexiconStore.build(path, formulas, aliases);
+    const existing = await this.load(path);
+    if (existing && existing.hash === lex.hash && !aliases) return null;
+    await this.ensureDir();
+    await this.adapter.write(this.fileFor(path), JSON.stringify(lex, null, 2));
+    return lex;
+  }
+  /** 强制重建（忽略 hash 去重）。 */
+  async rebuild(path, formulas, aliases) {
+    const lex = _LexiconStore.build(path, formulas, aliases);
+    await this.ensureDir();
+    await this.adapter.write(this.fileFor(path), JSON.stringify(lex, null, 2));
+    return lex;
+  }
+  /** 仅更新别名（不动公式区，避免覆盖人工排序）。 */
+  async updateAliases(path, aliases) {
+    var _a2;
+    const existing = (_a2 = await this.load(path)) != null ? _a2 : {
+      path,
+      hash: contentHash(""),
+      updatedAt: Date.now(),
+      formulas: []
+    };
+    return this.rebuild(path, existing.formulas, aliases);
+  }
+  async ensureDir() {
+    try {
+      await this.adapter.mkdir(this.dir);
+    } catch (e) {
+    }
+  }
+};
+
+// src/extract-formulas.ts
+function normalizeFormula(f) {
+  return f.replace(/\s+/g, " ").trim();
+}
+function isFormula(f) {
+  if (!f) return false;
+  if (/^[0-9.,\s]+$/.test(f)) return false;
+  return /[\\{}^=_a-zA-Z0-9]/.test(f);
+}
+function extractFormulas(doc) {
+  const out = /* @__PURE__ */ new Set();
+  for (const [start, end] of mathZones(doc)) {
+    const f = normalizeFormula(doc.slice(start, end));
+    if (isFormula(f)) out.add(f);
+  }
+  return [...out];
+}
 
 // src/main.ts
+var _a;
 var TopicCollabPlugin = class extends import_obsidian7.Plugin {
   constructor() {
     super(...arguments);
@@ -1319,6 +2151,31 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
     this.isStreaming = false;
     /** 侧边栏顶部状态行 */
     this.statusText = `v${PLUGIN_VERSION} \xB7 \u5C31\u7EEA`;
+    /** 每笔记词库（旁路 JSON）存储 */
+    this.lexicons = new LexiconStore(
+      this.app.vault.adapter,
+      `${(_a = this.manifest.dir) != null ? _a : ".obsidian/plugins/topic-collab"}/lexicons`
+    );
+    /** 词库内存缓存（供本地补全器同步读取） */
+    this.lexiconCache = /* @__PURE__ */ new Map();
+    /** 本地补全器：命令字典 + 本页 token + 词库 + 别名 */
+    this.local = new LocalCompleter({
+      getLexicon: (p) => {
+        var _a2;
+        return (_a2 = this.lexiconCache.get(p)) != null ? _a2 : null;
+      }
+    });
+    this.lexiconTimer = null;
+    this.ghost = new GhostController({
+      getSettings: () => this.settings,
+      getAiClient: () => new AiClient(this.settings),
+      notify: (msg) => new import_obsidian7.Notice(msg),
+      getActiveNotePath: () => {
+        var _a2, _b, _c;
+        return (_c = (_b = (_a2 = this.getActiveMarkdownView()) == null ? void 0 : _a2.file) == null ? void 0 : _b.path) != null ? _c : "";
+      },
+      local: this.local
+    });
     this.ribbonEl = null;
     this.activeRequestId = 0;
     this.cancelRequested = false;
@@ -1386,13 +2243,32 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
       name: "\u6253\u5F00\u8BFE\u9898\u534F\u4F5C\u4FA7\u8FB9\u680F",
       callback: () => void this.ensureSidebar()
     });
+    this.addCommand({
+      id: "ghost-build-lexicon",
+      name: "\u672C\u5730\u8865\u5168\uFF1A\u6784\u5EFA\u5F53\u524D\u7B14\u8BB0\u8BCD\u5E93",
+      callback: () => void this.buildCurrentLexicon(false)
+    });
+    this.addCommand({
+      id: "ghost-rebuild-lexicon",
+      name: "\u672C\u5730\u8865\u5168\uFF1A\u91CD\u5EFA\u5F53\u524D\u7B14\u8BB0\u8BCD\u5E93",
+      callback: () => void this.buildCurrentLexicon(true)
+    });
+    this.addCommand({
+      id: "ghost-alias-build",
+      name: "\u672C\u5730\u8865\u5168\uFF1A\u751F\u6210\u4E2D\u6587\u522B\u540D\u8BCD\u5E93\uFF08dsv4f\uFF09",
+      callback: () => void this.buildAliasesForCurrent()
+    });
     this.isStreaming = false;
     console.log(`[topic-collab] loaded v${PLUGIN_VERSION}`);
     this.addSettingTab(new TopicCollabSettingTab(this.app, this));
+    this.registerEditorExtension(createGhostExtension(this.ghost));
     this.registerEvent(
       this.app.workspace.on("editor-change", (editor, view) => {
         if (view instanceof import_obsidian7.MarkdownView) {
           this.collab.onEditorChange(view);
+          if (view.file && this.settings.autoLexicon) {
+            this.scheduleLexiconBuild(view.file.path, view.editor.getValue());
+          }
         }
       })
     );
@@ -1402,6 +2278,7 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
         if (md == null ? void 0 : md.file) {
           this.lastMarkdownPath = md.file.path;
           this.collab.cacheSelection(md);
+          void this.warmLexicon(md.file.path);
         }
         this.collab.onActiveLeafChange();
         void this.maybeAutoEnableFromFrontmatter();
@@ -1411,6 +2288,7 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
       this.app.workspace.on("file-open", (file) => {
         if (file instanceof import_obsidian7.TFile) {
           this.collab.onFileOpen(file);
+          void this.warmLexicon(file.path);
         }
         void this.maybeAutoEnableFromFrontmatter();
       })
@@ -1421,6 +2299,8 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
       })
     );
     this.app.workspace.onLayoutReady(() => {
+      const md = this.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView);
+      if (md == null ? void 0 : md.file) void this.warmLexicon(md.file.path);
       void this.maybeAutoEnableFromFrontmatter();
     });
   }
@@ -1428,12 +2308,83 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
     this.cancelStream();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_TOPIC_COLLAB);
   }
+  /** 打开笔记时预热词库到内存缓存。 */
+  async warmLexicon(path) {
+    const lex = await this.lexicons.load(path);
+    if (lex) this.lexiconCache.set(path, lex);
+    else this.lexiconCache.delete(path);
+  }
+  scheduleLexiconBuild(path, content) {
+    if (this.lexiconTimer !== null) {
+      window.clearTimeout(this.lexiconTimer);
+    }
+    this.lexiconTimer = window.setTimeout(() => {
+      void this.buildLexiconFor(path, content, false);
+    }, this.settings.lexiconDebounceMs);
+  }
+  /** 建库：同 hash 不重复写盘（不重复扣 LLM 费）。返回是否写入。 */
+  async buildLexiconFor(path, content, force) {
+    const formulas = extractFormulas(content);
+    if (formulas.length === 0) return false;
+    const lex = force ? await this.lexicons.rebuild(path, formulas) : await this.lexicons.save(path, formulas);
+    if (lex) this.lexiconCache.set(path, lex);
+    return !!lex;
+  }
+  async currentNote() {
+    const view = this.getActiveMarkdownView();
+    const file = view == null ? void 0 : view.file;
+    if (!file) {
+      new import_obsidian7.Notice("\u8BF7\u5148\u6253\u5F00\u4E00\u7BC7\u7B14\u8BB0");
+      return null;
+    }
+    return { path: file.path, content: view.editor.getValue() };
+  }
+  async buildCurrentLexicon(force) {
+    const note = await this.currentNote();
+    if (!note) return;
+    const ok = await this.buildLexiconFor(note.path, note.content, force);
+    if (force) {
+      new import_obsidian7.Notice("\u8BCD\u5E93\u5DF2\u91CD\u5EFA");
+    } else {
+      new import_obsidian7.Notice(ok ? "\u8BCD\u5E93\u5DF2\u6784\u5EFA" : "\u8BCD\u5E93\u65E0\u53D8\u5316\uFF08\u540C hash \u8DF3\u8FC7\uFF09");
+    }
+  }
+  /** LLM 冷路径：中文别名 → LaTeX，写入当前笔记词库 aliases。用 ghostModel（默认 dsv4f），不改聊天 model。 */
+  async buildAliasesForCurrent() {
+    if (!this.settings.apiKey.trim()) {
+      new import_obsidian7.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u586B\u5199 API Key");
+      return;
+    }
+    const note = await this.currentNote();
+    if (!note) return;
+    const client = new AiClient(this.settings);
+    const system = '\u4F60\u662F LaTeX \u52A9\u624B\u3002\u6839\u636E\u7ED9\u51FA\u7684\u7B14\u8BB0\u7247\u6BB5\uFF0C\u5217\u51FA\u672C\u9875\u6D89\u53CA\u7684\u6570\u5B66\u6982\u5FF5/\u7B26\u53F7\u7684\u4E2D\u6587\u522B\u540D\u4E0E\u5BF9\u5E94\u7684 LaTeX \u4EE3\u7801\u3002\u53EA\u8F93\u51FA JSON \u6570\u7EC4\uFF0C\u5F62\u5982 [{"trigger":"\u79EF\u5206","latex":"\\\\int"}]\uFF0C\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981 markdown \u56F4\u680F\u3002trigger \u4E3A 2-6 \u5B57\u4E2D\u6587\u540D\uFF0Clatex \u4E3A\u53EF\u76F4\u63A5\u63D2\u5165\u516C\u5F0F\u7684\u7247\u6BB5\uFF08\u4E0D\u542B $\uFF09\u3002\u6700\u591A 20 \u6761\u3002';
+    new import_obsidian7.Notice("\u6B63\u5728\u751F\u6210\u522B\u540D\u8BCD\u5E93\uFF08dsv4f\uFF09\u2026");
+    try {
+      const text = await client.completeRaw(system, note.content.slice(0, 6e3), {
+        maxTokens: 1500,
+        temperature: 0.2,
+        model: this.settings.ghostModel
+      });
+      const aliases = parseAliases(text);
+      if (aliases.length === 0) {
+        new import_obsidian7.Notice("\u6A21\u578B\u672A\u8FD4\u56DE\u6709\u6548\u522B\u540D");
+        return;
+      }
+      const lex = await this.lexicons.updateAliases(note.path, aliases);
+      if (lex) this.lexiconCache.set(note.path, lex);
+      new import_obsidian7.Notice(`\u522B\u540D\u8BCD\u5E93\u5DF2\u751F\u6210\uFF1A${aliases.length} \u6761`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      new import_obsidian7.Notice(`\u751F\u6210\u5931\u8D25\uFF1A${msg.slice(0, 100)}`);
+    }
+  }
   /** 检测关闭的标签页，自动从 @ 列表移除 */
   removeClosedFilesFromCollab() {
     const openPaths = new Set(
       this.app.workspace.getLeavesOfType("markdown").map((leaf) => {
-        var _a, _b;
-        return (_b = (_a = leaf.view) == null ? void 0 : _a.file) == null ? void 0 : _b.path;
+        var _a2, _b;
+        return (_b = (_a2 = leaf.view) == null ? void 0 : _a2.file) == null ? void 0 : _b.path;
       }).filter(Boolean)
     );
     for (const path of [...this.collab.boundNotePaths]) {
@@ -1454,8 +2405,8 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
     }
   }
   async loadSettings() {
-    var _a;
-    const data = (_a = await this.loadData()) != null ? _a : {};
+    var _a2;
+    const data = (_a2 = await this.loadData()) != null ? _a2 : {};
     if (data.defaultIntent !== void 0) {
       data.defaultIntent = migrateIntent(data.defaultIntent);
     }
@@ -1464,6 +2415,23 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
     }
     const { memorySessions: _ms, ...settingsData } = data;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
+    this.migrateGhostSettings(settingsData);
+  }
+  /** 关掉危险的「停笔就请求」默认；旧 ghostEnabled 映射到 ghostMode */
+  migrateGhostSettings(raw) {
+    if (raw.ghostMode === "off" || raw.ghostMode === "manual" || raw.ghostMode === "idle") {
+    } else if (raw.ghostEnabled === true) {
+      this.settings.ghostMode = "manual";
+    } else {
+      this.settings.ghostMode = "off";
+    }
+    delete this.settings.ghostEnabled;
+    if (!this.settings.ghostCooldownMs || this.settings.ghostCooldownMs < 3e3) {
+      this.settings.ghostCooldownMs = DEFAULT_SETTINGS.ghostCooldownMs;
+    }
+    if (this.settings.ghostDebounceMs < 800) {
+      this.settings.ghostDebounceMs = DEFAULT_SETTINGS.ghostDebounceMs;
+    }
   }
   async saveSettings() {
     await this.persist();
@@ -1598,7 +2566,7 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
     this.ribbonEl.toggleClass("topic-collab-ribbon-active", this.collab.collabActive);
   }
   getAnyMarkdownView() {
-    var _a;
+    var _a2;
     const active = this.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView);
     if (active == null ? void 0 : active.file) return active;
     const paths = this.collab.boundNotePaths.length > 0 ? this.collab.boundNotePaths : this.lastMarkdownPath ? [this.lastMarkdownPath] : [];
@@ -1606,7 +2574,7 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
       if (!path) continue;
       for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
         const view = leaf.view;
-        if (((_a = view.file) == null ? void 0 : _a.path) === path) return view;
+        if (((_a2 = view.file) == null ? void 0 : _a2.path) === path) return view;
       }
     }
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
@@ -1620,8 +2588,8 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
     return this.getAnyMarkdownView();
   }
   getActiveMarkdownView() {
-    var _a;
-    return (_a = this.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView)) != null ? _a : null;
+    var _a2;
+    return (_a2 = this.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView)) != null ? _a2 : null;
   }
   async ensureSidebar() {
     const existing = this.app.workspace.getLeavesOfType(
@@ -1654,12 +2622,12 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
     }
   }
   async maybeAutoEnableFromFrontmatter() {
-    var _a;
+    var _a2;
     const view = this.getActiveMarkdownView();
     const file = view == null ? void 0 : view.file;
     if (!file) return;
     const cache = this.app.metadataCache.getFileCache(file);
-    const collabFlag = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a.collab;
+    const collabFlag = (_a2 = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a2.collab;
     if (collabFlag === true || collabFlag === "true") {
       this.collab.setActive(true);
       this.updateRibbonState();
@@ -1704,7 +2672,15 @@ ${primary}`;
     }
     return prompt || "(\u5168\u6587)";
   }
-  async runIntent(intent) {
+  /** 无目标按钮：不带预设意图的自由提交（通用 system prompt）。 */
+  async runFreeform() {
+    await this.runIntent("check", {
+      systemPrompt: GENERIC_PROMPT,
+      label: "\u65E0\u76EE\u6807"
+    });
+  }
+  async runIntent(intent, opts) {
+    var _a2;
     console.log("[topic-collab] runIntent", intent);
     if (!this.collab.collabActive) {
       new import_obsidian7.Notice("\u8BF7\u5148\u5F00\u542F\u8BFE\u9898\u534F\u4F5C\u6A21\u5F0F");
@@ -1768,14 +2744,16 @@ ${primary}`;
     const requestId = ++this.activeRequestId;
     this.cancelRequested = false;
     this.isStreaming = true;
-    this.setStatus(`\u6B63\u5728\u8BF7\u6C42 API\uFF08${INTENT_LABELS[intent]}\uFF09\u2026`);
+    const label = (_a2 = opts == null ? void 0 : opts.label) != null ? _a2 : INTENT_LABELS[intent];
+    this.setStatus(`\u6B63\u5728\u8BF7\u6C42 API\uFF08${label}\uFF09\u2026`);
     sidebar.beginStreaming();
     try {
       const client = new AiClient(this.settings);
       const fullResponse = await client.complete(
         intent,
         userMessage,
-        history
+        history,
+        opts == null ? void 0 : opts.systemPrompt
       );
       if (this.cancelRequested || requestId !== this.activeRequestId) {
         this.setStatus(recording ? "\u8BB0\u5FC6\u8BB0\u5F55\u4E2D" : "\u5C31\u7EEA");
@@ -1858,10 +2836,10 @@ ${primary}`;
   }
   /** 读取笔记内容（优先编辑器缓冲，含未保存改动） */
   async readNoteContentForEdit(path) {
-    var _a;
+    var _a2;
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
-      if (((_a = view.file) == null ? void 0 : _a.path) === path) {
+      if (((_a2 = view.file) == null ? void 0 : _a2.path) === path) {
         return view.editor.getValue();
       }
     }
@@ -1873,7 +2851,7 @@ ${primary}`;
   }
   /** 在 @ 笔记中找到原文并替换（仅允许 boundNotePaths 内的文件） */
   async applySingleEdit(edit) {
-    var _a;
+    var _a2;
     if (!this.collab.boundNotePaths.includes(edit.filePath)) {
       new import_obsidian7.Notice(`\u8DF3\u8FC7\u975E @ \u6587\u4EF6\uFF1A${edit.filePath}`);
       return;
@@ -1898,7 +2876,7 @@ ${primary}`;
     let written = false;
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
-      if (((_a = view.file) == null ? void 0 : _a.path) === edit.filePath) {
+      if (((_a2 = view.file) == null ? void 0 : _a2.path) === edit.filePath) {
         view.editor.setValue(newContent);
         written = true;
         break;
@@ -1909,8 +2887,8 @@ ${primary}`;
     }
   }
   async insertResponse(append) {
-    var _a, _b;
-    const sidebar = (_a = this.app.workspace.getLeavesOfType(VIEW_TYPE_TOPIC_COLLAB)[0]) == null ? void 0 : _a.view;
+    var _a2, _b;
+    const sidebar = (_a2 = this.app.workspace.getLeavesOfType(VIEW_TYPE_TOPIC_COLLAB)[0]) == null ? void 0 : _a2.view;
     const text = (_b = sidebar == null ? void 0 : sidebar.lastResponse) == null ? void 0 : _b.trim();
     if (!text) {
       new import_obsidian7.Notice("\u6CA1\u6709\u53EF\u63D2\u5165\u7684\u5185\u5BB9");
@@ -1940,6 +2918,29 @@ ${text}
     new import_obsidian7.Notice(append ? "\u5DF2\u8FFD\u52A0\u5230\u6587\u672B" : "\u5DF2\u63D2\u5165\u5230\u5149\u6807");
   }
 };
+function parseAliases(text) {
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start === -1 || end === -1 || end <= start) return [];
+  const raw = text.slice(start, end + 1);
+  const normalize = (arr) => {
+    if (!Array.isArray(arr)) return [];
+    const items = arr;
+    return items.filter(
+      (x) => !!x && typeof x === "object" && typeof x.trigger === "string" && typeof x.latex === "string"
+    ).map((x) => ({ trigger: x.trigger.trim(), latex: x.latex.trim() })).filter((a) => a.trigger.length >= 2 && a.latex && !a.latex.includes("$"));
+  };
+  try {
+    return normalize(JSON.parse(raw));
+  } catch (e) {
+    const repaired = raw.replace(/(?<!\\)\\(?![\\"bfnrtu])/g, "\\\\");
+    try {
+      return normalize(JSON.parse(repaired));
+    } catch (e2) {
+      return [];
+    }
+  }
+}
 var TopicCollabSettingTab = class extends import_obsidian7.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -2058,8 +3059,38 @@ var TopicCollabSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
       })
     );
+    containerEl.createEl("h3", { text: "\u672C\u5730\u8865\u5168\uFF08\u96F6 LLM\uFF09" });
+    new import_obsidian7.Setting(containerEl).setName("\u672C\u5730\u8865\u5168").setDesc(
+      "\u6570\u5B66\u73AF\u5883\u5185\u7070\u5B57\u8865\u5168\uFF1ALaTeX \u547D\u4EE4\u5B57\u5178 + \u672C\u9875\u5DF2\u5199\u7B26\u53F7 + \u6BCF\u7B14\u8BB0\u8BCD\u5E93\u3002\u7EAF\u672C\u5730\u3001\u6BEB\u79D2\u7EA7\u3001\u4E0D\u8017 API\u3002"
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.localCompletion).onChange(async (value) => {
+        this.plugin.settings.localCompletion = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("\u81EA\u52A8\u5EFA\u8BCD\u5E93").setDesc("\u6253\u5F00/\u7F16\u8F91\u7B14\u8BB0\u65F6\u81EA\u52A8\u62BD\u53D6 $ \u5757\u751F\u6210\u6BCF\u7B14\u8BB0\u8BCD\u5E93\uFF1B\u540C\u5185\u5BB9 hash \u4E0D\u91CD\u590D\u5199\u76D8\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.autoLexicon).onChange(async (value) => {
+        this.plugin.settings.autoLexicon = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("\u8BCD\u5E93\u91CD\u5EFA\u5EF6\u8FDF\uFF08\u6BEB\u79D2\uFF09").setDesc("\u505C\u7B14\u591A\u4E45\u540E\u81EA\u52A8\u91CD\u5EFA\u8BCD\u5E93\u3002\u5EFA\u8BAE \u22653000\uFF0C\u9632\u8FDE\u6253\u5199\u76D8\u3002").addText(
+      (text) => text.setValue(String(this.plugin.settings.lexiconDebounceMs)).onChange(async (value) => {
+        const n = parseInt(value, 10);
+        if (!Number.isNaN(n) && n >= 1e3 && n <= 6e4) {
+          this.plugin.settings.lexiconDebounceMs = n;
+          await this.plugin.saveSettings();
+        }
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("\u51B7\u8DEF\u5F84\u6A21\u578B").setDesc("\u4E2D\u6587\u522B\u540D\u751F\u6210\u4E13\u7528\u6A21\u578B\uFF0C\u9ED8\u8BA4 dsv4f\uFF1B\u4E0D\u5F71\u54CD\u804A\u5929\u6A21\u5757\u7684 model\u3002").addText(
+      (text) => text.setValue(this.plugin.settings.ghostModel).onChange(async (value) => {
+        this.plugin.settings.ghostModel = value.trim() || "deepseek-v4-flash";
+        await this.plugin.saveSettings();
+      })
+    );
     new import_obsidian7.Setting(containerEl).setName("\u8BF4\u660E").setDesc(
-      "\u4E94\u6A21\u5F0F\uFF1A\u68C0\u9519 / \u8BA8\u8BBA / \u7EED\u5199 / LaTeX / \u4FEE\u6539\u7B14\u8BB0\u3002\u8FDE\u7EED\u6A21\u5F0F\u9700\u5148\u300C\u5F00\u59CB\u8BB0\u5FC6\u300D\u3002\u8BB0\u5FC6 md \u4EC5\u5728\u300C\u7ED3\u675F\u8BB0\u5FC6\u300D\u65F6\u751F\u6210\u3002"
+      "\u672C\u5730\u8865\u5168\u9ED8\u8BA4\u5F00\u542F\uFF1A\u6570\u5B66\u73AF\u5883\u5185\u7070\u5B57\u8865\u5168 LaTeX \u547D\u4EE4 / \u672C\u9875\u7B26\u53F7 / \u8BCD\u5E93\u516C\u5F0F\uFF0C\u7EAF\u672C\u5730\u96F6 API\u3002\u8BCD\u5E93\u547D\u4EE4\uFF1A\u6784\u5EFA/\u91CD\u5EFA\u5F53\u524D\u7B14\u8BB0\u8BCD\u5E93\u3001\u751F\u6210\u4E2D\u6587\u522B\u540D\u8BCD\u5E93\uFF08\u51B7\u8DEF\u5F84\u6A21\u578B\uFF09\u3002"
     );
   }
 };

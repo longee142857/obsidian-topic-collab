@@ -6,7 +6,7 @@ import {
 } from "obsidian";
 import type TopicCollabPlugin from "./main";
 import type { ConversationRound } from "./memory-session";
-import { ALL_INTENTS, INTENT_LABELS, VIEW_TYPE_TOPIC_COLLAB } from "./settings";
+import { INTENT_LABELS, VIEW_TYPE_TOPIC_COLLAB } from "./settings";
 
 export class TopicCollabSidebarView extends ItemView {
   private boundNoteEl!: HTMLElement;
@@ -72,17 +72,18 @@ export class TopicCollabSidebarView extends ItemView {
       cls: "topic-collab-buffer is-empty",
     });
 
-    const promptRow = controls.createDiv({ cls: "topic-collab-prompt-row" });
-    this.promptArea = promptRow.createEl("textarea", {
+    const promptWrap = controls.createDiv({ cls: "topic-collab-prompt-wrap" });
+    this.promptArea = promptWrap.createEl("textarea", {
       cls: "topic-collab-prompt",
       attr: {
         placeholder: "可选：写具体问题…",
         rows: "2",
       },
     });
-    this.clearBtn = promptRow.createEl("button", {
+    this.clearBtn = promptWrap.createEl("button", {
       cls: "topic-collab-clear-btn",
-      text: "清",
+      text: "清空",
+      attr: { type: "button", title: "清空输入与选区缓冲" },
     });
     this.clearBtn.addEventListener("click", () => {
       this.clearBuffer();
@@ -92,15 +93,18 @@ export class TopicCollabSidebarView extends ItemView {
     });
 
     this.actionsEl = controls.createDiv({ cls: "topic-collab-actions" });
-    ALL_INTENTS.forEach((intent) => {
+    // 三等分：检错 / 无目标 / 修改笔记
+    const actionBtn = (text: string, onClick: () => void): HTMLButtonElement => {
       const btn = this.actionsEl.createEl("button", {
-        text: INTENT_LABELS[intent],
+        text,
         cls: "topic-collab-action-btn",
       });
-      btn.addEventListener("click", () => {
-        void this.plugin.runIntent(intent);
-      });
-    });
+      btn.addEventListener("click", onClick);
+      return btn;
+    };
+    actionBtn(INTENT_LABELS.check, () => void this.plugin.runIntent("check"));
+    actionBtn("无目标", () => void this.plugin.runFreeform());
+    actionBtn(INTENT_LABELS.edit, () => void this.plugin.runIntent("edit"));
 
     const responseWrap = containerEl.createDiv({
       cls: "topic-collab-response-wrap",
@@ -243,12 +247,18 @@ export class TopicCollabSidebarView extends ItemView {
     const modeRow = this.memoryBarEl.createDiv({
       cls: "topic-collab-memory-mode",
     });
-    const toggleBtn = modeRow.createEl("button", {
+    const singleBtn = modeRow.createEl("button", {
       cls: "topic-collab-mode-btn",
-      attr: { "data-action": "mode-toggle" },
+      text: "单次",
+      attr: { "data-action": "mode-single", type: "button" },
     });
-    toggleBtn.setText(mode === "continuous" ? "连续" : "单次");
-    toggleBtn.toggleClass("is-continuous", mode === "continuous");
+    const contBtn = modeRow.createEl("button", {
+      cls: "topic-collab-mode-btn",
+      text: "连续",
+      attr: { "data-action": "mode-continuous", type: "button" },
+    });
+    singleBtn.toggleClass("is-active", mode === "single");
+    contBtn.toggleClass("is-active", mode === "continuous");
 
     if (mode === "continuous") {
       const ctrl = this.memoryBarEl.createDiv({
@@ -265,12 +275,13 @@ export class TopicCollabSidebarView extends ItemView {
         });
         ctrl.createEl("button", {
           text: "结束记忆",
-          attr: { "data-action": "memory-end" },
+          attr: { "data-action": "memory-end", type: "button" },
         });
       } else {
         ctrl.createEl("button", {
           text: "开始记忆",
-          attr: { "data-action": "memory-start" },
+          cls: "topic-collab-memory-start",
+          attr: { "data-action": "memory-start", type: "button" },
         });
       }
     }

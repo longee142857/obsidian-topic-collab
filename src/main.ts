@@ -13,14 +13,14 @@ import { CollabController, SubmitPayload } from "./collab-mode";
 import { IntentModal } from "./intent-modal";
 import { MemoryStore } from "./memory-store";
 import { MemorySessionManager } from "./memory-session";
-import { buildUserMessage } from "./prompts";
+import { buildUserMessage, GENERIC_PROMPT } from "./prompts";
 import { parseEditSuggestions, stripEditBlocks } from "./edit-suggest";
 import { EditConfirmModal } from "./edit-modal";
 import {
   TopicCollabSidebarView,
   createRibbonIcon,
 } from "./sidebar-view";
-import type { ChatMessage, Intent, TopicCollabSettings } from "./settings";
+import type { ChatMessage, Intent, MemoryMode, TopicCollabSettings } from "./settings";
 import {
   ALL_INTENTS,
   DEFAULT_SETTINGS,
@@ -29,6 +29,10 @@ import {
   VIEW_TYPE_TOPIC_COLLAB,
 } from "./settings";
 import { PLUGIN_VERSION } from "./version";
+import { createGhostExtension, GhostController } from "./ghost-completion";
+import { LocalCompleter } from "./local-completer";
+import { LexiconStore, type Lexicon, type Alias } from "./lexicon";
+import { extractFormulas } from "./extract-formulas";
 
 export default class TopicCollabPlugin extends Plugin {
   settings: TopicCollabSettings = { ...DEFAULT_SETTINGS };
@@ -38,6 +42,25 @@ export default class TopicCollabPlugin extends Plugin {
   isStreaming = false;
   /** 侧边栏顶部状态行 */
   statusText = `v${PLUGIN_VERSION} · 就绪`;
+  /** 每笔记词库（旁路 JSON）存储 */
+  lexicons = new LexiconStore(
+    this.app.vault.adapter,
+    `${this.manifest.dir ?? ".obsidian/plugins/topic-collab"}/lexicons`
+  );
+  /** 词库内存缓存（供本地补全器同步读取） */
+  lexiconCache = new Map<string, Lexicon>();
+  /** 本地补全器：命令字典 + 本页 token + 词库 + 别名 */
+  local = new LocalCompleter({
+    getLexicon: (p) => this.lexiconCache.get(p) ?? null,
+  });
+  private lexiconTimer: number | null = null;
+  ghost = new GhostController({
+    getSettings: () => this.settings,
+    getAiClient: () => new AiClient(this.settings),
+    notify: (msg) => new Notice(msg),
+    getActiveNotePath: () => this.getActiveMarkdownView()?.file?.path ?? "",
+    local: this.local,
+  });
 
   private ribbonEl: HTMLElement | null = null;
   private activeRequestId = 0;
@@ -117,15 +140,36 @@ export default class TopicCollabPlugin extends Plugin {
       callback: () => void this.ensureSidebar(),
     });
 
+    this.addCommand({
+      id: "ghost-build-lexicon",
+      name: "本地补全：构建当前笔记词库",
+      callback: () => void this.buildCurrentLexicon(false),
+    });
+    this.addCommand({
+      id: "ghost-rebuild-lexicon",
+      name: "本地补全：重建当前笔记词库",
+      callback: () => void this.buildCurrentLexicon(true),
+    });
+    this.addCommand({
+      id: "ghost-alias-build",
+      name: "本地补全：生成中文别名词库（dsv4f）",
+      callback: () => void this.buildAliasesForCurrent(),
+    });
+
     this.isStreaming = false;
     console.log(`[topic-collab] loaded v${PLUGIN_VERSION}`);
 
     this.addSettingTab(new TopicCollabSettingTab(this.app, this));
 
+    this.registerEditorExtension(createGhostExtension(this.ghost));
+
     this.registerEvent(
       this.app.workspace.on("editor-change", (editor, view) => {
         if (view instanceof MarkdownView) {
           this.collab.onEditorChange(view);
+          if (view.file && this.settings.autoLexicon) {
+            this.scheduleLexiconBuild(view.file.path, view.editor.getValue());
+          }
         }
       })
     );
@@ -136,6 +180,7 @@ export default class TopicCollabPlugin extends Plugin {
         if (md?.file) {
           this.lastMarkdownPath = md.file.path;
           this.collab.cacheSelection(md);
+          void this.warmLexicon(md.file.path);
         }
         this.collab.onActiveLeafChange();
         void this.maybeAutoEnableFromFrontmatter();
@@ -146,6 +191,7 @@ export default class TopicCollabPlugin extends Plugin {
       this.app.workspace.on("file-open", (file) => {
         if (file instanceof TFile) {
           this.collab.onFileOpen(file);
+          void this.warmLexicon(file.path);
         }
         void this.maybeAutoEnableFromFrontmatter();
       })
@@ -158,6 +204,9 @@ export default class TopicCollabPlugin extends Plugin {
     );
 
     this.app.workspace.onLayoutReady(() => {
+      // 插件重载时预热当前打开笔记的词库（file-open 只在打开新文件时触发）
+      const md = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (md?.file) void this.warmLexicon(md.file.path);
       void this.maybeAutoEnableFromFrontmatter();
     });
   }
@@ -165,6 +214,92 @@ export default class TopicCollabPlugin extends Plugin {
   onunload(): void {
     this.cancelStream();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_TOPIC_COLLAB);
+  }
+
+  /** 打开笔记时预热词库到内存缓存。 */
+  async warmLexicon(path: string): Promise<void> {
+    const lex = await this.lexicons.load(path);
+    if (lex) this.lexiconCache.set(path, lex);
+    else this.lexiconCache.delete(path);
+  }
+
+  private scheduleLexiconBuild(path: string, content: string): void {
+    if (this.lexiconTimer !== null) {
+      window.clearTimeout(this.lexiconTimer);
+    }
+    this.lexiconTimer = window.setTimeout(() => {
+      void this.buildLexiconFor(path, content, false);
+    }, this.settings.lexiconDebounceMs);
+  }
+
+  /** 建库：同 hash 不重复写盘（不重复扣 LLM 费）。返回是否写入。 */
+  async buildLexiconFor(
+    path: string,
+    content: string,
+    force: boolean
+  ): Promise<boolean> {
+    const formulas = extractFormulas(content);
+    if (formulas.length === 0) return false;
+    const lex = force
+      ? await this.lexicons.rebuild(path, formulas)
+      : await this.lexicons.save(path, formulas);
+    if (lex) this.lexiconCache.set(path, lex);
+    return !!lex;
+  }
+
+  private async currentNote(): Promise<{ path: string; content: string } | null> {
+    const view = this.getActiveMarkdownView();
+    const file = view?.file;
+    if (!file) {
+      new Notice("请先打开一篇笔记");
+      return null;
+    }
+    return { path: file.path, content: view.editor.getValue() };
+  }
+
+  async buildCurrentLexicon(force: boolean): Promise<void> {
+    const note = await this.currentNote();
+    if (!note) return;
+    const ok = await this.buildLexiconFor(note.path, note.content, force);
+    if (force) {
+      new Notice("词库已重建");
+    } else {
+      new Notice(ok ? "词库已构建" : "词库无变化（同 hash 跳过）");
+    }
+  }
+
+  /** LLM 冷路径：中文别名 → LaTeX，写入当前笔记词库 aliases。用 ghostModel（默认 dsv4f），不改聊天 model。 */
+  async buildAliasesForCurrent(): Promise<void> {
+    if (!this.settings.apiKey.trim()) {
+      new Notice("请先在设置中填写 API Key");
+      return;
+    }
+    const note = await this.currentNote();
+    if (!note) return;
+    const client = new AiClient(this.settings);
+    const system =
+      "你是 LaTeX 助手。根据给出的笔记片段，列出本页涉及的数学概念/符号的中文别名与对应的 LaTeX 代码。" +
+      '只输出 JSON 数组，形如 [{"trigger":"积分","latex":"\\\\int"}]，不要解释、不要 markdown 围栏。' +
+      "trigger 为 2-6 字中文名，latex 为可直接插入公式的片段（不含 $）。最多 20 条。";
+    new Notice("正在生成别名词库（dsv4f）…");
+    try {
+      const text = await client.completeRaw(system, note.content.slice(0, 6000), {
+        maxTokens: 1500,
+        temperature: 0.2,
+        model: this.settings.ghostModel,
+      });
+      const aliases = parseAliases(text);
+      if (aliases.length === 0) {
+        new Notice("模型未返回有效别名");
+        return;
+      }
+      const lex = await this.lexicons.updateAliases(note.path, aliases);
+      if (lex) this.lexiconCache.set(note.path, lex);
+      new Notice(`别名词库已生成：${aliases.length} 条`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      new Notice(`生成失败：${msg.slice(0, 100)}`);
+    }
   }
 
   /** 检测关闭的标签页，自动从 @ 列表移除 */
@@ -204,6 +339,27 @@ export default class TopicCollabPlugin extends Plugin {
     }
     const { memorySessions: _ms, ...settingsData } = data;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
+    // v0.7 曾默认 idle 自动打满血 LLM；强制迁到安全模式
+    this.migrateGhostSettings(settingsData as Record<string, unknown>);
+  }
+
+  /** 关掉危险的「停笔就请求」默认；旧 ghostEnabled 映射到 ghostMode */
+  private migrateGhostSettings(raw: Record<string, unknown>): void {
+    if (raw.ghostMode === "off" || raw.ghostMode === "manual" || raw.ghostMode === "idle") {
+      // already explicit
+    } else if (raw.ghostEnabled === true) {
+      // 曾开启自动补全 → 降级为手动，避免刷爆
+      this.settings.ghostMode = "manual";
+    } else {
+      this.settings.ghostMode = "off";
+    }
+    delete (this.settings as { ghostEnabled?: boolean }).ghostEnabled;
+    if (!this.settings.ghostCooldownMs || this.settings.ghostCooldownMs < 3000) {
+      this.settings.ghostCooldownMs = DEFAULT_SETTINGS.ghostCooldownMs;
+    }
+    if (this.settings.ghostDebounceMs < 800) {
+      this.settings.ghostDebounceMs = DEFAULT_SETTINGS.ghostDebounceMs;
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -471,7 +627,18 @@ export default class TopicCollabPlugin extends Plugin {
     return prompt || "(全文)";
   }
 
-  async runIntent(intent: Intent): Promise<void> {
+  /** 无目标按钮：不带预设意图的自由提交（通用 system prompt）。 */
+  async runFreeform(): Promise<void> {
+    await this.runIntent("check", {
+      systemPrompt: GENERIC_PROMPT,
+      label: "无目标",
+    });
+  }
+
+  async runIntent(
+    intent: Intent,
+    opts?: { systemPrompt?: string; label?: string }
+  ): Promise<void> {
     console.log("[topic-collab] runIntent", intent);
 
     if (!this.collab.collabActive) {
@@ -552,7 +719,8 @@ export default class TopicCollabPlugin extends Plugin {
     this.cancelRequested = false;
     this.isStreaming = true;
 
-    this.setStatus(`正在请求 API（${INTENT_LABELS[intent]}）…`);
+    const label = opts?.label ?? INTENT_LABELS[intent];
+    this.setStatus(`正在请求 API（${label}）…`);
     sidebar.beginStreaming();
 
     try {
@@ -560,7 +728,8 @@ export default class TopicCollabPlugin extends Plugin {
       const fullResponse = await client.complete(
         intent,
         userMessage,
-        history
+        history,
+        opts?.systemPrompt
       );
 
       if (this.cancelRequested || requestId !== this.activeRequestId) {
@@ -739,6 +908,39 @@ export default class TopicCollabPlugin extends Plugin {
 
     this.collab.tryBindFromWorkspace();
     new Notice(append ? "已追加到文末" : "已插入到光标");
+  }
+}
+
+/** 容错解析 LLM 返回的别名词组：剥围栏、截取 []、修复裸反斜杠。 */
+function parseAliases(text: string): Alias[] {
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start === -1 || end === -1 || end <= start) return [];
+  const raw = text.slice(start, end + 1);
+  const normalize = (arr: unknown): Alias[] => {
+    if (!Array.isArray(arr)) return [];
+    const items = arr as Array<{ trigger?: unknown; latex?: unknown }>;
+    return items
+      .filter(
+        (x): x is { trigger: string; latex: string } =>
+          !!x &&
+          typeof x === "object" &&
+          typeof x.trigger === "string" &&
+          typeof x.latex === "string"
+      )
+      .map((x) => ({ trigger: x.trigger.trim(), latex: x.latex.trim() }))
+      .filter((a) => a.trigger.length >= 2 && a.latex && !a.latex.includes("$"));
+  };
+  try {
+    return normalize(JSON.parse(raw));
+  } catch {
+    // LLM 常输出裸反斜杠（\int 而非 \\int），给非 JSON 转义的反斜杠补一个前缀
+    const repaired = raw.replace(/(?<!\\)\\(?![\\"bfnrtu])/g, "\\\\");
+    try {
+      return normalize(JSON.parse(repaired));
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -937,10 +1139,65 @@ class TopicCollabSettingTab extends PluginSettingTab {
           })
       );
 
+    containerEl.createEl("h3", { text: "本地补全（零 LLM）" });
+
+    new Setting(containerEl)
+      .setName("本地补全")
+      .setDesc(
+        "数学环境内灰字补全：LaTeX 命令字典 + 本页已写符号 + 每笔记词库。纯本地、毫秒级、不耗 API。"
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.localCompletion)
+          .onChange(async (value) => {
+            this.plugin.settings.localCompletion = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("自动建词库")
+      .setDesc("打开/编辑笔记时自动抽取 $ 块生成每笔记词库；同内容 hash 不重复写盘。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoLexicon)
+          .onChange(async (value) => {
+            this.plugin.settings.autoLexicon = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("词库重建延迟（毫秒）")
+      .setDesc("停笔多久后自动重建词库。建议 ≥3000，防连打写盘。")
+      .addText((text) =>
+        text
+          .setValue(String(this.plugin.settings.lexiconDebounceMs))
+          .onChange(async (value) => {
+            const n = parseInt(value, 10);
+            if (!Number.isNaN(n) && n >= 1000 && n <= 60000) {
+              this.plugin.settings.lexiconDebounceMs = n;
+              await this.plugin.saveSettings();
+            }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("冷路径模型")
+      .setDesc("中文别名生成专用模型，默认 dsv4f；不影响聊天模块的 model。")
+      .addText((text) =>
+        text
+          .setValue(this.plugin.settings.ghostModel)
+          .onChange(async (value) => {
+            this.plugin.settings.ghostModel = value.trim() || "deepseek-v4-flash";
+            await this.plugin.saveSettings();
+          })
+      );
+
     new Setting(containerEl)
       .setName("说明")
       .setDesc(
-        "五模式：检错 / 讨论 / 续写 / LaTeX / 修改笔记。连续模式需先「开始记忆」。记忆 md 仅在「结束记忆」时生成。"
+        "本地补全默认开启：数学环境内灰字补全 LaTeX 命令 / 本页符号 / 词库公式，纯本地零 API。词库命令：构建/重建当前笔记词库、生成中文别名词库（冷路径模型）。"
       );
   }
 }

@@ -118,29 +118,30 @@
   color: var(--text-faint);
 }
 
-.topic-collab-prompt-row {
-  display: flex;
-  gap: 4px;
-  align-items: stretch;
+.topic-collab-prompt-wrap {
+  position: relative;
 }
 
-.topic-collab-prompt-row .topic-collab-prompt {
-  flex: 1;
+.topic-collab-prompt-wrap .topic-collab-prompt {
+  width: 100%;
+  padding-right: 48px;
+  box-sizing: border-box;
 }
 
 .topic-collab-clear-btn {
-  flex-shrink: 0;
-  width: 26px;
-  padding: 0;
-  font-size: var(--font-ui-smaller);
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 22px;
   color: var(--text-muted);
-  background: var(--background-modifier-hover);
+  background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
+  border-radius: 4px;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .topic-collab-clear-btn:hover {
@@ -176,7 +177,7 @@
 
 .topic-collab-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 4px;
 }
 
@@ -185,8 +186,10 @@
 }
 
 .topic-collab-action-btn {
-  padding: 4px 6px;
+  width: 100%;
+  padding: 6px 4px;
   font-size: var(--font-ui-smaller);
+  text-align: center;
 }
 
 .topic-collab-response-wrap {
@@ -234,18 +237,20 @@
 }
 
 .topic-collab-memory-mode {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 4px;
 }
 
 .topic-collab-mode-btn {
-  flex: 1;
-  padding: 2px 6px;
+  width: 100%;
+  padding: 4px 6px;
   font-size: var(--font-ui-smaller);
-  opacity: 0.65;
+  text-align: center;
+  opacity: 0.55;
 }
 
-.topic-collab-mode-btn.is-continuous {
+.topic-collab-mode-btn.is-active {
   opacity: 1;
   font-weight: 600;
   border-color: var(--color-accent);
@@ -261,7 +266,13 @@
 
 .topic-collab-memory-ctrl button {
   font-size: var(--font-ui-smaller);
-  padding: 2px 8px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+
+.topic-collab-memory-start {
+  flex: 1;
+  width: 100%;
 }
 
 .topic-collab-recording-dot {
@@ -472,4 +483,11 @@
   gap: 8px;
   justify-content: flex-end;
   margin-top: 12px;
+}
+
+.topic-collab-ghost {
+  opacity: 0.45;
+  color: var(--text-muted);
+  pointer-events: none;
+  white-space: pre-wrap;
 }
