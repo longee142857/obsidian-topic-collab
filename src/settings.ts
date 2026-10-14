@@ -23,11 +23,9 @@ export interface TopicCollabSettings {
   historyTurns: number;
   /** 单次：每问独立；连续：手动开始/结束，结束时才写记忆 md */
   memoryMode: MemoryMode;
-  /**
-   * 幽灵补全触发：off=关闭；manual=仅快捷键；idle=停笔自动（慢模型下易刷爆 API，慎用）
-   */
-  ghostMode: "off" | "manual" | "idle";
-  /** 停笔后多久请求补全（仅 idle） */
+  /** 云端 FIM：off=关闭；manual=仅用户执行命令/快捷键时请求 */
+  ghostMode: "off" | "manual";
+  /** @deprecated 旧版 idle 自动请求延迟；保留以兼容旧配置读取 */
   ghostDebounceMs: number;
   /** 两次幽灵请求最短间隔（毫秒），防连打 */
   ghostCooldownMs: number;

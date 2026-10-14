@@ -1,4 +1,4 @@
-/** Ghost Tab completion: 热路径 = 本地补全器（命令/本页token/词库，零 LLM）；FIM LLM 仅手动 Ctrl+Shift+G，硬隔离。 */
+/** Ghost Tab completion: 热路径 = 本地补全器（命令/本页token/词库，零 LLM）；云端 FIM 仅由用户显式触发。 */
 import {
   Decoration,
   EditorView,
@@ -135,7 +135,6 @@ export interface GhostHost {
 
 /** Shared controller so commands can trigger the same request path. */
 export class GhostController {
-  private timer: ReturnType<typeof setTimeout> | null = null;
   private seq = 0;
   private localSeq = 0;
   private inFlight = false;
@@ -149,30 +148,10 @@ export class GhostController {
     this.lastView = view;
   }
 
-  clearTimer(): void {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-  }
-
-  /** Cancel pending idle request; bump seq so in-flight result is ignored. */
+  /** Bump sequence so in-flight local or cloud results are ignored after an edit. */
   cancelPending(): void {
-    this.clearTimer();
     this.seq++;
     this.localSeq++;
-  }
-
-  scheduleIdle(view: EditorView): void {
-    const settings = this.host.getSettings();
-    if (settings.ghostMode !== "idle") return;
-    this.attachView(view);
-    this.clearTimer();
-    const delay = Math.max(800, settings.ghostDebounceMs);
-    const my = ++this.seq;
-    this.timer = setTimeout(() => {
-      void this.request(view, my, "idle");
-    }, delay);
   }
 
   /**
@@ -210,39 +189,28 @@ export class GhostController {
       this.host.notify?.("请先把光标放在笔记编辑器里");
       return;
     }
-    this.clearTimer();
     const my = ++this.seq;
-    void this.request(v, my, "manual");
+    void this.request(v, my);
   }
 
-  private async request(
-    view: EditorView,
-    my: number,
-    reason: "idle" | "manual"
-  ): Promise<void> {
+  private async request(view: EditorView, my: number): Promise<void> {
     const settings = this.host.getSettings();
     if (settings.ghostMode === "off") return;
-    if (settings.ghostMode === "idle" && reason !== "idle" && reason !== "manual")
-      return;
-    // manual allowed in both manual and idle modes
-    if (settings.ghostMode === "manual" && reason === "idle") return;
 
     if (!settings.apiKey.trim()) {
-      if (reason === "manual") this.host.notify?.("请先填写 API Key");
+      this.host.notify?.("请先填写 API Key");
       return;
     }
 
     const cooldown = Math.max(3000, settings.ghostCooldownMs);
     const now = Date.now();
     if (this.inFlight) {
-      if (reason === "manual") this.host.notify?.("补全请求进行中，请稍候");
+      this.host.notify?.("补全请求进行中，请稍候");
       return;
     }
     if (now - this.lastRequestAt < cooldown) {
       const wait = Math.ceil((cooldown - (now - this.lastRequestAt)) / 1000);
-      if (reason === "manual") {
-        this.host.notify?.(`冷却中，约 ${wait}s 后再试（防刷爆 API）`);
-      }
+      this.host.notify?.(`冷却中，约 ${wait}s 后再试（防刷爆 API）`);
       return;
     }
 
@@ -250,11 +218,9 @@ export class GhostController {
     const doc = view.state.doc.toString();
     const mode = shouldRequestGhost(doc, pos, settings.latexBias);
     if (mode === "none") {
-      if (reason === "manual") {
-        this.host.notify?.(
-          "当前位置不像公式环境（调低 latexBias 或写到 $...$ 内再试）"
-        );
-      }
+      this.host.notify?.(
+        "当前位置不像公式环境（调低 latexBias 或写到 $...$ 内再试）"
+      );
       return;
     }
 
@@ -269,7 +235,9 @@ export class GhostController {
 
     this.inFlight = true;
     this.lastRequestAt = now;
-    if (reason === "manual") this.host.notify?.("正在请求幽灵补全…");
+    this.host.notify?.(
+      "正在请求云端补全：将发送当前笔记光标前最多 1200 字符和后最多 400 字符至已配置的 API 服务。"
+    );
 
     try {
       const client = this.host.getAiClient();
@@ -281,7 +249,7 @@ export class GhostController {
       if (my !== this.seq) return;
       text = sanitizeGhost(text, mode);
       if (!text) {
-        if (reason === "manual") this.host.notify?.("模型未返回可用片段");
+        this.host.notify?.("模型未返回可用片段");
         return;
       }
       view.dispatch({
@@ -289,10 +257,8 @@ export class GhostController {
       });
     } catch (e) {
       console.warn("[topic-collab] ghost failed", e);
-      if (reason === "manual") {
-        const msg = e instanceof Error ? e.message : String(e);
-        this.host.notify?.(`补全失败：${msg.slice(0, 80)}`);
-      }
+      const msg = e instanceof Error ? e.message : String(e);
+      this.host.notify?.(`补全失败：${msg.slice(0, 80)}`);
     } finally {
       this.inFlight = false;
     }
@@ -315,7 +281,6 @@ export function createGhostExtension(controller: GhostController) {
         controller.cancelPending();
         if (update.docChanged) {
           controller.scheduleLocal(update.view);
-          controller.scheduleIdle(update.view);
         }
       }
     }

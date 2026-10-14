@@ -141,6 +141,13 @@ export default class TopicCollabPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "ghost-request-fim",
+      name: "云端 FIM 补全（发送光标附近片段）",
+      hotkeys: [{ modifiers: ["Ctrl", "Shift"], key: "g" }],
+      callback: () => this.ghost.requestManual(),
+    });
+
+    this.addCommand({
       id: "ghost-build-lexicon",
       name: "本地补全：构建当前笔记词库",
       callback: () => void this.buildCurrentLexicon(false),
@@ -343,12 +350,12 @@ export default class TopicCollabPlugin extends Plugin {
     this.migrateGhostSettings(settingsData as Record<string, unknown>);
   }
 
-  /** 关掉危险的「停笔就请求」默认；旧 ghostEnabled 映射到 ghostMode */
+  /** 只允许显式手动请求；旧版 idle 自动请求迁移为手动，旧开关也迁移为手动。 */
   private migrateGhostSettings(raw: Record<string, unknown>): void {
-    if (raw.ghostMode === "off" || raw.ghostMode === "manual" || raw.ghostMode === "idle") {
-      // already explicit
-    } else if (raw.ghostEnabled === true) {
-      // 曾开启自动补全 → 降级为手动，避免刷爆
+    if (raw.ghostMode === "off" || raw.ghostMode === "manual") {
+      // 保留明确的关闭或手动设置。
+    } else if (raw.ghostMode === "idle" || raw.ghostEnabled === true) {
+      // 旧版停笔自动请求改为手动，避免用户输入时把笔记片段发到云端。
       this.settings.ghostMode = "manual";
     } else {
       this.settings.ghostMode = "off";
@@ -1151,6 +1158,22 @@ class TopicCollabSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.localCompletion)
           .onChange(async (value) => {
             this.plugin.settings.localCompletion = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("云端 FIM 补全")
+      .setDesc(
+        "默认关闭。手动模式只在执行“云端 FIM 补全”命令（默认 Ctrl+Shift+G）时发送请求；输入和停笔不会触发。请求包含当前笔记光标前最多 1200 字符、后最多 400 字符及补全提示，不包含整篇笔记、其他文件或文件路径。DeepSeek 请求发往当前配置的 API Base URL（可为自定义端点）；Anthropic 请求发往 Anthropic API。离开本机的片段受对应服务的隐私政策约束。"
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("off", "关闭")
+          .addOption("manual", "手动触发")
+          .setValue(this.plugin.settings.ghostMode)
+          .onChange(async (value) => {
+            this.plugin.settings.ghostMode = value as "off" | "manual";
             await this.plugin.saveSettings();
           })
       );
