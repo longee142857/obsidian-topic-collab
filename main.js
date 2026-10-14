@@ -1489,7 +1489,6 @@ MODE: ${mode}
 var GhostController = class {
   constructor(host) {
     this.host = host;
-    this.timer = null;
     this.seq = 0;
     this.localSeq = 0;
     this.inFlight = false;
@@ -1500,28 +1499,10 @@ var GhostController = class {
   attachView(view) {
     this.lastView = view;
   }
-  clearTimer() {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-  }
-  /** Cancel pending idle request; bump seq so in-flight result is ignored. */
+  /** Bump sequence so in-flight local or cloud results are ignored after an edit. */
   cancelPending() {
-    this.clearTimer();
     this.seq++;
     this.localSeq++;
-  }
-  scheduleIdle(view) {
-    const settings = this.host.getSettings();
-    if (settings.ghostMode !== "idle") return;
-    this.attachView(view);
-    this.clearTimer();
-    const delay = Math.max(800, settings.ghostDebounceMs);
-    const my = ++this.seq;
-    this.timer = setTimeout(() => {
-      void this.request(view, my, "idle");
-    }, delay);
   }
   /**
    * 本地补全（命令 / 本页 token / 词库）。零 LLM。
@@ -1559,44 +1540,36 @@ var GhostController = class {
       (_d = (_c = this.host).notify) == null ? void 0 : _d.call(_c, "\u8BF7\u5148\u628A\u5149\u6807\u653E\u5728\u7B14\u8BB0\u7F16\u8F91\u5668\u91CC");
       return;
     }
-    this.clearTimer();
     const my = ++this.seq;
-    void this.request(v, my, "manual");
+    void this.request(v, my);
   }
-  async request(view, my, reason) {
+  async request(view, my) {
     var _a2, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
     const settings = this.host.getSettings();
     if (settings.ghostMode === "off") return;
-    if (settings.ghostMode === "idle" && reason !== "idle" && reason !== "manual")
-      return;
-    if (settings.ghostMode === "manual" && reason === "idle") return;
     if (!settings.apiKey.trim()) {
-      if (reason === "manual") (_b = (_a2 = this.host).notify) == null ? void 0 : _b.call(_a2, "\u8BF7\u5148\u586B\u5199 API Key");
+      (_b = (_a2 = this.host).notify) == null ? void 0 : _b.call(_a2, "\u8BF7\u5148\u586B\u5199 API Key");
       return;
     }
     const cooldown = Math.max(3e3, settings.ghostCooldownMs);
     const now = Date.now();
     if (this.inFlight) {
-      if (reason === "manual") (_d = (_c = this.host).notify) == null ? void 0 : _d.call(_c, "\u8865\u5168\u8BF7\u6C42\u8FDB\u884C\u4E2D\uFF0C\u8BF7\u7A0D\u5019");
+      (_d = (_c = this.host).notify) == null ? void 0 : _d.call(_c, "\u8865\u5168\u8BF7\u6C42\u8FDB\u884C\u4E2D\uFF0C\u8BF7\u7A0D\u5019");
       return;
     }
     if (now - this.lastRequestAt < cooldown) {
       const wait = Math.ceil((cooldown - (now - this.lastRequestAt)) / 1e3);
-      if (reason === "manual") {
-        (_f = (_e = this.host).notify) == null ? void 0 : _f.call(_e, `\u51B7\u5374\u4E2D\uFF0C\u7EA6 ${wait}s \u540E\u518D\u8BD5\uFF08\u9632\u5237\u7206 API\uFF09`);
-      }
+      (_f = (_e = this.host).notify) == null ? void 0 : _f.call(_e, `\u51B7\u5374\u4E2D\uFF0C\u7EA6 ${wait}s \u540E\u518D\u8BD5\uFF08\u9632\u5237\u7206 API\uFF09`);
       return;
     }
     const pos = view.state.selection.main.head;
     const doc = view.state.doc.toString();
     const mode = shouldRequestGhost(doc, pos, settings.latexBias);
     if (mode === "none") {
-      if (reason === "manual") {
-        (_h = (_g = this.host).notify) == null ? void 0 : _h.call(
-          _g,
-          "\u5F53\u524D\u4F4D\u7F6E\u4E0D\u50CF\u516C\u5F0F\u73AF\u5883\uFF08\u8C03\u4F4E latexBias \u6216\u5199\u5230 $...$ \u5185\u518D\u8BD5\uFF09"
-        );
-      }
+      (_h = (_g = this.host).notify) == null ? void 0 : _h.call(
+        _g,
+        "\u5F53\u524D\u4F4D\u7F6E\u4E0D\u50CF\u516C\u5F0F\u73AF\u5883\uFF08\u8C03\u4F4E latexBias \u6216\u5199\u5230 $...$ \u5185\u518D\u8BD5\uFF09"
+      );
       return;
     }
     const prefix = doc.slice(0, pos);
@@ -1609,7 +1582,10 @@ var GhostController = class {
     );
     this.inFlight = true;
     this.lastRequestAt = now;
-    if (reason === "manual") (_j = (_i = this.host).notify) == null ? void 0 : _j.call(_i, "\u6B63\u5728\u8BF7\u6C42\u5E7D\u7075\u8865\u5168\u2026");
+    (_j = (_i = this.host).notify) == null ? void 0 : _j.call(
+      _i,
+      "\u6B63\u5728\u8BF7\u6C42\u4E91\u7AEF\u8865\u5168\uFF1A\u5C06\u53D1\u9001\u5F53\u524D\u7B14\u8BB0\u5149\u6807\u524D\u6700\u591A 1200 \u5B57\u7B26\u548C\u540E\u6700\u591A 400 \u5B57\u7B26\u81F3\u5DF2\u914D\u7F6E\u7684 API \u670D\u52A1\u3002"
+    );
     try {
       const client = this.host.getAiClient();
       let text = await client.completeRaw(system, user, {
@@ -1620,7 +1596,7 @@ var GhostController = class {
       if (my !== this.seq) return;
       text = sanitizeGhost(text, mode);
       if (!text) {
-        if (reason === "manual") (_l = (_k = this.host).notify) == null ? void 0 : _l.call(_k, "\u6A21\u578B\u672A\u8FD4\u56DE\u53EF\u7528\u7247\u6BB5");
+        (_l = (_k = this.host).notify) == null ? void 0 : _l.call(_k, "\u6A21\u578B\u672A\u8FD4\u56DE\u53EF\u7528\u7247\u6BB5");
         return;
       }
       view.dispatch({
@@ -1628,10 +1604,8 @@ var GhostController = class {
       });
     } catch (e) {
       console.warn("[topic-collab] ghost failed", e);
-      if (reason === "manual") {
-        const msg = e instanceof Error ? e.message : String(e);
-        (_n = (_m = this.host).notify) == null ? void 0 : _n.call(_m, `\u8865\u5168\u5931\u8D25\uFF1A${msg.slice(0, 80)}`);
-      }
+      const msg = e instanceof Error ? e.message : String(e);
+      (_n = (_m = this.host).notify) == null ? void 0 : _n.call(_m, `\u8865\u5168\u5931\u8D25\uFF1A${msg.slice(0, 80)}`);
     } finally {
       this.inFlight = false;
     }
@@ -1651,7 +1625,6 @@ function createGhostExtension(controller) {
         controller.cancelPending();
         if (update.docChanged) {
           controller.scheduleLocal(update.view);
-          controller.scheduleIdle(update.view);
         }
       }
     }
@@ -2244,6 +2217,12 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
       callback: () => void this.ensureSidebar()
     });
     this.addCommand({
+      id: "ghost-request-fim",
+      name: "\u4E91\u7AEF FIM \u8865\u5168\uFF08\u53D1\u9001\u5149\u6807\u9644\u8FD1\u7247\u6BB5\uFF09",
+      hotkeys: [{ modifiers: ["Ctrl", "Shift"], key: "g" }],
+      callback: () => this.ghost.requestManual()
+    });
+    this.addCommand({
       id: "ghost-build-lexicon",
       name: "\u672C\u5730\u8865\u5168\uFF1A\u6784\u5EFA\u5F53\u524D\u7B14\u8BB0\u8BCD\u5E93",
       callback: () => void this.buildCurrentLexicon(false)
@@ -2417,10 +2396,10 @@ var TopicCollabPlugin = class extends import_obsidian7.Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
     this.migrateGhostSettings(settingsData);
   }
-  /** 关掉危险的「停笔就请求」默认；旧 ghostEnabled 映射到 ghostMode */
+  /** 只允许显式手动请求；旧版 idle 自动请求迁移为手动，旧开关也迁移为手动。 */
   migrateGhostSettings(raw) {
-    if (raw.ghostMode === "off" || raw.ghostMode === "manual" || raw.ghostMode === "idle") {
-    } else if (raw.ghostEnabled === true) {
+    if (raw.ghostMode === "off" || raw.ghostMode === "manual") {
+    } else if (raw.ghostMode === "idle" || raw.ghostEnabled === true) {
       this.settings.ghostMode = "manual";
     } else {
       this.settings.ghostMode = "off";
@@ -3065,6 +3044,14 @@ var TopicCollabSettingTab = class extends import_obsidian7.PluginSettingTab {
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.localCompletion).onChange(async (value) => {
         this.plugin.settings.localCompletion = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("\u4E91\u7AEF FIM \u8865\u5168").setDesc(
+      "\u9ED8\u8BA4\u5173\u95ED\u3002\u624B\u52A8\u6A21\u5F0F\u53EA\u5728\u6267\u884C\u201C\u4E91\u7AEF FIM \u8865\u5168\u201D\u547D\u4EE4\uFF08\u9ED8\u8BA4 Ctrl+Shift+G\uFF09\u65F6\u53D1\u9001\u8BF7\u6C42\uFF1B\u8F93\u5165\u548C\u505C\u7B14\u4E0D\u4F1A\u89E6\u53D1\u3002\u8BF7\u6C42\u5305\u542B\u5F53\u524D\u7B14\u8BB0\u5149\u6807\u524D\u6700\u591A 1200 \u5B57\u7B26\u3001\u540E\u6700\u591A 400 \u5B57\u7B26\u53CA\u8865\u5168\u63D0\u793A\uFF0C\u4E0D\u5305\u542B\u6574\u7BC7\u7B14\u8BB0\u3001\u5176\u4ED6\u6587\u4EF6\u6216\u6587\u4EF6\u8DEF\u5F84\u3002DeepSeek \u8BF7\u6C42\u53D1\u5F80\u5F53\u524D\u914D\u7F6E\u7684 API Base URL\uFF08\u53EF\u4E3A\u81EA\u5B9A\u4E49\u7AEF\u70B9\uFF09\uFF1BAnthropic \u8BF7\u6C42\u53D1\u5F80 Anthropic API\u3002\u79BB\u5F00\u672C\u673A\u7684\u7247\u6BB5\u53D7\u5BF9\u5E94\u670D\u52A1\u7684\u9690\u79C1\u653F\u7B56\u7EA6\u675F\u3002"
+    ).addDropdown(
+      (dropdown) => dropdown.addOption("off", "\u5173\u95ED").addOption("manual", "\u624B\u52A8\u89E6\u53D1").setValue(this.plugin.settings.ghostMode).onChange(async (value) => {
+        this.plugin.settings.ghostMode = value;
         await this.plugin.saveSettings();
       })
     );

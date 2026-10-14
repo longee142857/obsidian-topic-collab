@@ -19,7 +19,8 @@
 ### 本地补全 + Ghost（v0.8）
 
 - **热路径（默认开）**：数学区内灰字补全 — LaTeX 命令字典 / 本页符号 / 笔记词库；纯本地、零 LLM
-- **冷路径（默认关）**：`ghostMode=manual|idle` 时可选 FIM；中文别名生成走独立命令
+- **云端 FIM（默认关）**：只有启用“手动”并主动执行“云端 FIM 补全”命令（默认 `Ctrl+Shift+G`）时才请求模型；输入和停笔不会触发网络请求
+- FIM 仅发送当前笔记光标前最多 1200 字符、后最多 400 字符及补全提示；不会发送整篇笔记、其他文件或文件路径。DeepSeek 请求发往配置的 API Base URL（可为自定义端点），Anthropic 请求发往 Anthropic API；片段离开本机后受对应服务的隐私政策约束
 - **Tab** 接受，**Esc** 取消；与侧栏讨论分离，不写 `collab-memory`
 
 ### Key Features / 核心能力
@@ -85,6 +86,7 @@ cp main.js manifest.json styles.css {your-vault}/.obsidian/plugins/topic-collab/
 | Toggle collab mode | *(assign in Settings → Hotkeys)* |
 | Select AI intent | `Ctrl+Shift+A` |
 | Toggle selection priority | `Ctrl+Shift+S` |
+| Request cloud FIM completion | `Ctrl+Shift+G` |
 | Open sidebar | *(assign in Settings → Hotkeys)* |
 
 ---
@@ -142,6 +144,7 @@ src/
 - **API keys** are stored in Obsidian's local `data.json` (not in the vault markdown)
 - **Edit scope** is restricted to `@`-bound notes — AI cannot modify unbound files
 - **Edit requires consent** — all changes are previewed and must be confirmed before writing
+- **Local completion stays local** — cloud FIM is off by default and runs only on an explicit command; only the bounded text around the cursor is sent to the configured API service
 - No telemetry, no external connections except the configured API endpoint
 
 ---
